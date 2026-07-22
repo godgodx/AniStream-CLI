@@ -1,0 +1,44 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+.coverage.*
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+
+# Private runtime state and media
+data/
+downloads/
+download/
+videos/
+video/
+*.part
+*.part.mp4
+*.log
+
+# Secrets, sessions, and local environment files
+.env
+.env.*
+!.env.example
+*.cookie
+*.cookies
+cookies.txt
+*.session
+*.session-journal
+*.sqlite
+*.sqlite3
+*.db
+
+# Local launchers and editor state
+*.bat
+.idea/
+.vscode/
+
+# Operating-system files
+.DS_Store
+Thumbs.db

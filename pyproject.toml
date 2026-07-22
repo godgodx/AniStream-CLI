@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "anistream-cli"
+version = "0.1.0"
+description = "An extensible interactive CLI for discovering, streaming, and downloading anime."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["anime", "cli", "streaming", "downloader", "mpv", "ffmpeg"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Video",
+]
+dependencies = [
+    "beautifulsoup4>=4.12,<5",
+    "pycryptodome>=3.20,<4",
+    "requests>=2.32,<3",
+    "rich>=13.9,<15",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3,<9", "responses>=0.25,<1"]
+
+[project.scripts]
+anistream = "anistream.app:main"
+
+[project.urls]
+Homepage = "https://github.com/godgodx/AniStream-CLI"
+Repository = "https://github.com/godgodx/AniStream-CLI.git"
+Issues = "https://github.com/godgodx/AniStream-CLI/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
