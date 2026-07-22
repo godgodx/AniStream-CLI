@@ -17,7 +17,7 @@ AniStream CLI is a provider-driven media client with source preflight checks, au
 
 ## Features
 
-- **Focused interactive menu** — start directly with Link, Search, or Settings.
+- **Personal watch library** — resume in-progress movies and series directly from the main menu, with clear completion and episode status.
 - **Automatic provider detection** — pasted URLs are accepted only when a registered provider supports them.
 - **Multi-provider search model** — every result identifies its source site; Anime-Sama is the first implementation.
 - **Source preflight planning** — select the first embed that works for every requested episode, or the best verified route per episode.
@@ -123,6 +123,10 @@ anistream
 ## How it works
 
 ```text
+Continue Watching -> local library -> select a saved title
+      |                                |
+      |                                +--> resume the exact episode and position
+      v
 Link or Search
       |
       v
@@ -140,6 +144,12 @@ Resolve embeds -> probe media -> rank working routes
                          |
                          +--> failure: retry the next supported source
 ```
+
+### Continue Watching
+
+The local library opens instantly without contacting any provider. It lists every started movie and series with its source site, language and season, last-watched time, completion state, and exact episode or resume position.
+
+Selecting an in-progress title refreshes only that catalogue and resumes the saved episode immediately. Completed movies and series remain visible and can be restarted from the beginning or opened at a specific episode. Legacy history is upgraded automatically when its catalogue is next loaded.
 
 ### Link
 

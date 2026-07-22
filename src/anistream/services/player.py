@@ -146,6 +146,7 @@ class PlaybackService:
 
         command = [
             self.mpv_path,
+            "--really-quiet",
             "--save-position-on-quit",
             f"--watch-later-dir={watch_dir}",
             "--watch-later-options=start",
@@ -165,7 +166,7 @@ class PlaybackService:
         if origin:
             command.append(f"--http-header-fields=Origin: {origin}")
         if self.display_mode == "terminal":
-            command.extend(["--vo=tct", "--profile=sw-fast", "--really-quiet"])
+            command.extend(["--vo=tct", "--profile=sw-fast"])
         command.append(media.url)
 
         if status:
@@ -191,11 +192,13 @@ class PlaybackService:
         finished = return_code == 0 and position is None
         self.history.update(
             provider_id=catalogue.provider_id,
+            provider_name=catalogue.provider_name,
             catalogue_url=catalogue.url,
             title=catalogue.title,
             season=catalogue.season,
             language=catalogue.language,
             episode=episode.number,
+            total_episodes=len(catalogue.episodes),
             position=position or 0.0,
             duration=0.0,
             completed=finished,

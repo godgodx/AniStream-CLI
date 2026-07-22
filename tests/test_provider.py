@@ -1,6 +1,7 @@
 import unittest
 
 from anistream.providers.anime_sama import AnimeSamaProvider
+from anistream.providers.registry import ProviderRegistry
 
 
 class Response:
@@ -49,6 +50,11 @@ class AnimeSamaProviderTests(unittest.TestCase):
         result = self.provider.search("example")[0]
         self.assertEqual(result.provider_name, "Anime-Sama")
         self.assertEqual(result.title, "Example Title")
+
+    def test_registry_finds_provider_by_stable_id(self):
+        registry = ProviderRegistry([self.provider])
+        self.assertIs(registry.get("anime_sama"), self.provider)
+        self.assertIsNone(registry.get("missing"))
 
     def test_variants_and_episode_matrix(self):
         variants = self.provider.variants("https://anime-sama.to/catalogue/example-title/")

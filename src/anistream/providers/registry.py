@@ -18,6 +18,9 @@ class ProviderRegistry:
     def detect(self, url: str) -> Provider | None:
         return next((provider for provider in self._providers if provider.matches(url)), None)
 
+    def get(self, provider_id: str) -> Provider | None:
+        return next((provider for provider in self._providers if provider.id == provider_id), None)
+
     def search(self, query: str) -> tuple[list[SearchResult], list[str]]:
         results: list[SearchResult] = []
         errors: list[str] = []

@@ -13,6 +13,13 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _positive_int(value: object, default: int = 1) -> int:
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return default
+
+
 class HistoryStore:
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or data_dir() / "watch_history.json"
@@ -23,7 +30,9 @@ class HistoryStore:
             return {}
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
-            return data if isinstance(data, dict) else {}
+            if not isinstance(data, dict):
+                return {}
+            return {str(key): value for key, value in data.items() if isinstance(value, dict)}
         except (OSError, json.JSONDecodeError):
             return {}
 
@@ -44,11 +53,13 @@ class HistoryStore:
         self,
         *,
         provider_id: str,
+        provider_name: str,
         catalogue_url: str,
         title: str,
         season: str,
         language: str,
         episode: int,
+        total_episodes: int,
         position: float,
         duration: float,
         completed: bool,
@@ -56,26 +67,83 @@ class HistoryStore:
         key = self.key(provider_id, catalogue_url)
         previous = self._data.get(key, {})
         seen = {int(number) for number in previous.get("seen_episodes", []) if str(number).isdigit()}
+        total = _positive_int(total_episodes)
+        current = min(total, _positive_int(episode))
+        if previous.get("status") == "completed":
+            seen = set()
         if completed:
-            seen.add(episode)
+            seen.add(current)
+        title_completed = completed and current == total
+        if completed and not title_completed:
+            current = min(total, current + 1)
         self._data[key] = {
             "provider_id": provider_id,
+            "provider_name": provider_name,
             "catalogue_url": catalogue_url,
             "title": title,
             "season": season,
             "language": language,
-            "current_episode": episode + 1 if completed else episode,
+            "media_type": "movie" if total == 1 else "series",
+            "total_episodes": total,
+            "current_episode": current,
             "position": 0.0 if completed else max(0.0, position),
             "duration": max(0.0, duration),
-            "status": "completed" if completed else "in_progress",
+            "status": "completed" if title_completed else "in_progress",
             "seen_episodes": sorted(seen),
             "updated_at": _now(),
         }
         self._save()
 
+    def sync_catalogue(
+        self,
+        *,
+        provider_id: str,
+        provider_name: str,
+        catalogue_url: str,
+        title: str,
+        season: str,
+        language: str,
+        total_episodes: int,
+    ) -> dict[str, Any] | None:
+        """Refresh catalogue metadata without changing its last-watched time."""
+        key = self.key(provider_id, catalogue_url)
+        previous = self._data.get(key)
+        if previous is None:
+            return None
+
+        total = _positive_int(total_episodes)
+        seen = sorted(
+            {
+                int(number)
+                for number in previous.get("seen_episodes", [])
+                if str(number).isdigit() and 1 <= int(number) <= total
+            }
+        )
+        current = min(total, _positive_int(previous.get("current_episode", 1)))
+        refreshed = dict(previous)
+        refreshed.update(
+            {
+                "provider_id": provider_id,
+                "provider_name": provider_name,
+                "catalogue_url": catalogue_url,
+                "title": title,
+                "season": season,
+                "language": language,
+                "media_type": "movie" if total == 1 else "series",
+                "total_episodes": total,
+                "current_episode": current,
+                "status": "completed" if total in seen else "in_progress",
+                "seen_episodes": seen,
+            }
+        )
+        if refreshed != previous:
+            self._data[key] = refreshed
+            self._save()
+        return dict(refreshed)
+
     def all(self) -> list[dict[str, Any]]:
         return sorted(
-            (dict(value) for value in self._data.values()),
+            (dict(value) for value in self._data.values() if value.get("catalogue_url")),
             key=lambda item: item.get("updated_at", ""),
             reverse=True,
         )
