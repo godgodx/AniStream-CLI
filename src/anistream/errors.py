@@ -16,3 +16,7 @@ class MediaValidationError(AniStreamError):
 
 class ToolNotFoundError(AniStreamError):
     """A required external executable could not be found."""
+
+
+class PlaybackError(AniStreamError):
+    """mpv stopped unexpectedly after a media source was selected."""

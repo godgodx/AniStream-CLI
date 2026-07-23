@@ -9,7 +9,7 @@ from ctypes import wintypes
 from pathlib import Path
 from typing import Callable
 
-from anistream.errors import ResolverError, ToolNotFoundError
+from anistream.errors import PlaybackError, ResolverError, ToolNotFoundError
 from anistream.models import Catalogue, Episode, ResolvedMedia
 from anistream.resolvers.registry import ResolverRegistry
 from anistream.services.history import HistoryStore
@@ -134,15 +134,16 @@ class PlaybackService:
         episode: Episode,
         plan: SourcePlan | None = None,
         status: Callable[[str], None] | None = None,
+        preferred_media: ResolvedMedia | None = None,
     ) -> bool:
         if not self.mpv_path:
             raise ToolNotFoundError("mpv was not found; set its path in Settings before using Watch")
-        media = self._pick_media(episode, plan, status)
+        media = preferred_media or self._pick_media(episode, plan, status)
         state = self.history.get(catalogue.provider_id, catalogue.url) or {}
         start = float(state.get("position", 0.0)) if int(state.get("current_episode", 0) or 0) == episode.number else 0.0
         watch_dir = self._watch_later_dir(catalogue, episode.number)
-        existing_resume = any(watch_dir.iterdir()) if watch_dir.exists() else False
         watch_dir.mkdir(parents=True, exist_ok=True)
+        resume_snapshot = self._watch_later_snapshot(watch_dir)
 
         command = [
             self.mpv_path,
@@ -162,7 +163,7 @@ class PlaybackService:
                 f"{catalogue.language.label} - Episode {episode.number}"
             ),
         ]
-        if start > 0 and not existing_resume:
+        if start > 0:
             command.append(f"--start={start:.3f}")
         user_agent = media.headers.get("User-Agent")
         referer = media.headers.get("Referer")
@@ -178,8 +179,14 @@ class PlaybackService:
         command.append(media.url)
 
         if status:
-            status(f"Streaming episode {episode.number} with {media.resolver_name}...")
-        process = subprocess.Popen(command, shell=False)
+            if media.kind == "local":
+                status(f"Playing downloaded episode {episode.number}...")
+            else:
+                status(f"Streaming episode {episode.number} with {media.resolver_name}...")
+        try:
+            process = subprocess.Popen(command, shell=False)
+        except OSError as exc:
+            raise PlaybackError(f"mpv could not start: {exc}") from exc
         job = _WindowsKillOnCloseJob(process)
         if os.name == "nt" and not job.active:
             process.terminate()
@@ -196,8 +203,11 @@ class PlaybackService:
                     process.kill()
                     process.wait()
             job.close()
-        position = self._resume_position(watch_dir)
+        position = self._resume_position(watch_dir, resume_snapshot)
         finished = return_code == 0 and position is None
+        saved_position = position
+        if return_code != 0 and saved_position is None and start > 0:
+            saved_position = start
         self.history.update(
             provider_id=catalogue.provider_id,
             provider_name=catalogue.provider_name,
@@ -208,10 +218,15 @@ class PlaybackService:
             language_code=catalogue.language.code,
             episode=episode.number,
             total_episodes=len(catalogue.episodes),
-            position=position or 0.0,
+            position=saved_position or 0.0,
             duration=0.0,
             completed=finished,
         )
+        if return_code != 0:
+            raise PlaybackError(
+                f"mpv stopped unexpectedly with exit code {return_code}. "
+                "Your progress was preserved and no automatic source switch was attempted."
+            )
         return finished
 
     def _pick_media(
@@ -235,7 +250,8 @@ class PlaybackService:
                 errors.append(f"{candidate.player}: {exc}")
                 if status:
                     status(f"{candidate.player} failed; trying the next source...")
-        raise ResolverError("all sources failed: " + "; ".join(errors))
+        detail = "; ".join(errors) if errors else "no playable sources are available"
+        raise ResolverError("all sources failed: " + detail)
 
     @staticmethod
     def _watch_later_dir(catalogue: Catalogue, episode: int) -> Path:
@@ -243,8 +259,35 @@ class PlaybackService:
         return data_dir() / "mpv_state" / hashlib.sha256(identity).hexdigest()[:24]
 
     @staticmethod
-    def _resume_position(directory: Path) -> float | None:
-        files = sorted((path for path in directory.iterdir() if path.is_file()), key=lambda path: path.stat().st_mtime, reverse=True)
+    def _watch_later_snapshot(directory: Path) -> dict[Path, tuple[int, int]]:
+        snapshot: dict[Path, tuple[int, int]] = {}
+        for path in directory.iterdir():
+            if not path.is_file():
+                continue
+            try:
+                stat = path.stat()
+                snapshot[path] = (stat.st_mtime_ns, stat.st_size)
+            except OSError:
+                continue
+        return snapshot
+
+    @staticmethod
+    def _resume_position(
+        directory: Path,
+        previous: dict[Path, tuple[int, int]] | None = None,
+    ) -> float | None:
+        files: list[Path] = []
+        for path in directory.iterdir():
+            if not path.is_file():
+                continue
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            if previous is not None and previous.get(path) == (stat.st_mtime_ns, stat.st_size):
+                continue
+            files.append(path)
+        files.sort(key=lambda path: path.stat().st_mtime, reverse=True)
         for path in files:
             try:
                 match = re.search(r"(?m)^start=([0-9.]+)\s*$", path.read_text(encoding="utf-8", errors="ignore"))

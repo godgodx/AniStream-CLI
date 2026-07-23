@@ -18,6 +18,7 @@ AniStream CLI is a provider-driven media client with source preflight checks, au
 ## Features
 
 - **Personal watch library** — resume in-progress movies and series directly from the main menu, with clear completion and episode status.
+- **Downloaded media library** — browse locally available movies and series, see exact episode coverage, and start or resume them without contacting a provider.
 - **Automatic provider detection** — pasted URLs are accepted only when a registered provider supports them.
 - **Multi-provider search** — search every enabled catalogue concurrently and keep each result clearly attributed to its source site.
 - **Source preflight planning** — select the first embed that works for every requested episode, or the best verified route per episode.
@@ -126,12 +127,22 @@ anistream
 
 ## How it works
 
+The main menu keeps the most common workflows in a predictable order:
+
+1. **Continue Watching** — resume saved progress;
+2. **Search** — discover a title across every enabled provider;
+3. **Local** — browse and immediately play downloaded media;
+4. **Link** — open a supported catalogue URL directly;
+5. **Settings** — change saved preferences and executable paths.
+
 ```text
-Continue Watching -> local library -> select a saved title
-      |                                |
-      |                                +--> resume the exact episode and position
-      v
-Link or Search
+Continue Watching -> watch history -> resume the exact episode and position
+
+Local -> scan configured download directory -> select a downloaded title
+                                           |
+                                           +--> validate MP4 -> start or resume locally
+
+Search or Link
       |
       v
 Provider detection -> structured season and language discovery
@@ -151,17 +162,23 @@ Resolve embeds -> probe media -> rank working routes
 
 ### Continue Watching
 
-The local library opens instantly without contacting any provider. It lists every started movie and series with its source site, language and season, last-watched time, completion state, and exact episode or resume position.
+The watch-history library opens instantly without contacting any provider. It lists every started movie and series with its source site, language and season, last-watched time, completion state, and exact episode or resume position.
 
 Selecting an in-progress title refreshes only that catalogue and resumes the saved episode immediately. Completed movies and series remain visible and can be restarted from the beginning or opened at a specific episode. Legacy history is upgraded automatically when its catalogue is next loaded.
-
-### Link
-
-Paste a catalogue URL. AniStream CLI identifies the owning provider and rejects unsupported sites cleanly. After language and season selection, choose Watch or Download.
 
 ### Search
 
 Search every enabled provider from one prompt. Results include their provider name so adding more sites never makes the source ambiguous.
+
+### Local
+
+Local scans only the configured download directory and groups final `Episode XXX.mp4` files by title, season, and language. The centered library view shows whether each title is new, in progress, or completed; its exact local episode ranges; and the episode and position that will be resumed.
+
+Selecting a title starts immediately from the first local episode or resumes the matching watch-history entry. If the saved episode is not downloaded, AniStream selects the next available local episode and explains the adjustment. After an episode finishes, only the next downloaded episode is offered, so gaps in the local collection are skipped cleanly.
+
+### Link
+
+Paste a catalogue URL. AniStream CLI identifies the owning provider and rejects unsupported sites cleanly. After language and season selection, choose Watch or Download.
 
 ### Download
 
@@ -187,6 +204,10 @@ Watch mode resolves and probes candidates in order, then streams the first worki
 For safer playback of third-party streams, AniStream starts mpv without user configuration, external scripts, yt-dlp, file-local configuration, or unsafe playlists. Automatic discovery also rejects mpv executables stored inside the project tree; an explicit path can still be selected in Settings.
 
 AniStream CLI stores the current episode, resume position, completed episodes, and mpv watch-later state. When an episode finishes normally, the next episode is offered immediately and receives a fresh source plan.
+
+When the selected episode already exists in the configured download directory, Watch validates the MP4 with FFprobe and plays that local file before contacting any embed host. The same mpv watch-later identity is used for local and remote playback, so switching between them does not reset episode progress. Invalid local files are ignored with a visible warning and online sources remain available as fallback.
+
+Continue Watching can also resume a verified local episode when its original provider is temporarily unavailable or no longer enabled. If mpv stops unexpectedly after playback has started, AniStream reports the exit cleanly and preserves the saved position; it does not silently switch sources during an active viewing session.
 
 Normal mpv window playback is recommended. In-terminal video uses mpv's low-resolution Unicode `tct` output and is enabled only for compatible terminals such as Mintty; unsupported Windows terminals automatically fall back to window mode. On Windows, mpv is attached to a process guard so closing AniStream CLI cannot leave orphaned playback behind.
 

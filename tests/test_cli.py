@@ -1,5 +1,6 @@
 import io
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from rich.console import Console
@@ -17,6 +18,7 @@ from anistream.cli import (
 )
 from anistream.models import CatalogueVariant, MediaLanguage
 from anistream.services.downloader import DownloadProgress
+from anistream.services.local_library import LocalLibraryEntry
 
 
 class EpisodeSelectionTests(unittest.TestCase):
@@ -102,8 +104,38 @@ class MainMenuRenderingTests(unittest.TestCase):
         output = cli.console.export_text(styles=False)
         menu_line = next(line for line in output.splitlines() if "Continue Watching" in line)
         self.assertGreater(len(menu_line) - len(menu_line.lstrip()), 10)
+        self.assertLess(output.index("Search"), output.index("Local"))
+        self.assertLess(output.index("Local"), output.index("Link"))
+        self.assertLess(output.index("Link"), output.index("Settings"))
         prompt = ask.call_args.args[0]
         self.assertGreater(len(prompt.plain) - len(prompt.plain.lstrip()), 10)
+
+    def test_local_library_is_centered_and_shows_available_and_resume_state(self):
+        cli = Cli.__new__(Cli)
+        cli.console = Console(width=120, record=True, color_system=None)
+        entry = LocalLibraryEntry(
+            "Title",
+            "Season 1",
+            "EN",
+            Path("downloads/Title/Season 1/EN"),
+            (1, 2, 3, 5),
+            {
+                "status": "in_progress",
+                "current_episode": 3,
+                "position": 125,
+            },
+        )
+        with patch("anistream.cli.IntPrompt.ask", return_value=0):
+            self.assertIsNone(cli.choose_local_entry([entry]))
+
+        output = cli.console.export_text(styles=False)
+        self.assertIn("Local Library", output)
+        self.assertIn("In progress", output)
+        self.assertIn("1-3, 5", output)
+        self.assertIn("Resume episode 3", output)
+        self.assertIn("2:05", output)
+        title_line = next(line for line in output.splitlines() if "Local Library" in line)
+        self.assertGreater(len(title_line) - len(title_line.lstrip()), 5)
 
 
 class ScreenNavigationTests(unittest.TestCase):

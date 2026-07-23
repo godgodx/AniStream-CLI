@@ -1,20 +1,23 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 from anistream.cli import Cli
-from anistream.errors import AniStreamError, ProviderError, ToolNotFoundError
-from anistream.models import Catalogue, SearchResult
+from anistream.errors import AniStreamError, PlaybackError, ProviderError, ResolverError, ToolNotFoundError
+from anistream.models import Catalogue, Episode, MediaLanguage, ResolvedMedia, SearchResult
 from anistream.providers import ProviderRegistry, default_providers
 from anistream.resolvers import ResolverRegistry, default_resolvers
 from anistream.services.downloader import DownloadManager
 from anistream.services.history import HistoryStore
+from anistream.services.local_library import LocalLibrary
 from anistream.services.media_probe import RemoteMediaProbe
 from anistream.services.media_validator import MediaValidator
 from anistream.services.player import PlaybackService
 from anistream.services.settings import SettingsStore
 from anistream.services.source_planner import SourcePlanner
 from anistream.utils.http import DEFAULT_USER_AGENT, HttpClient
+from anistream.utils.paths import media_directory
 
 
 class Application:
@@ -45,10 +48,18 @@ class Application:
                 if choice == "1":
                     self._continue_watching()
                     continue
-                if choice == "4":
+                if choice == "2":
+                    selected = self._from_search()
+                elif choice == "3":
+                    self._local_library()
+                    continue
+                elif choice == "4":
+                    selected = self._from_link()
+                elif choice == "5":
                     self.cli.settings_menu()
                     continue
-                selected = self._from_link() if choice == "2" else self._from_search()
+                else:
+                    continue
                 if selected is None:
                     continue
                 provider, url = selected
@@ -101,19 +112,66 @@ class Application:
         provider = next(item for item in self.providers.providers if item.id == result.provider_id)
         return provider, result.url
 
+    def _local_library(self) -> None:
+        with self.cli.status("Scanning the local library..."):
+            entries = LocalLibrary(self.settings.download_directory()).scan(self.history.all())
+        entry = self.cli.choose_local_entry(entries)
+        if entry is None:
+            return
+        catalogue = entry.catalogue()
+        current = self.history.get(catalogue.provider_id, catalogue.url)
+        self.cli.clear_screen()
+        self.cli.show_catalogue(catalogue, current)
+        if entry.status == "in_progress":
+            self.cli.info(
+                f"Resuming {catalogue.title} from downloaded episode {entry.resume_episode}..."
+            )
+        elif entry.status == "completed":
+            self.cli.info(
+                f"Replaying {catalogue.title} from downloaded episode {entry.resume_episode}..."
+            )
+        else:
+            self.cli.info(
+                f"Starting {catalogue.title} from downloaded episode {entry.resume_episode}..."
+            )
+        self._watch(
+            catalogue,
+            start_episode=entry.resume_episode,
+            episode_sequence=entry.episodes,
+        )
+
     def _continue_watching(self) -> None:
         entry = self.cli.choose_history_entry(self.history.all())
         if entry is None:
             return
         provider = self.providers.get(str(entry.get("provider_id", "")))
+        catalogue = None
+        offline = False
         if provider is None:
-            self.cli.error("This title belongs to a provider that is no longer enabled.")
-            self.cli.pause()
-            return
+            catalogue = self._offline_catalogue(entry)
+            if catalogue is None:
+                self.cli.error(
+                    "This title belongs to a provider that is no longer enabled, "
+                    "and its current episode is not available locally."
+                )
+                self.cli.pause()
+                return
+            offline = True
+            self.cli.warning("The original provider is disabled; continuing from the local download.")
+        else:
+            try:
+                with self.cli.status(f"Refreshing {provider.name}..."):
+                    catalogue = provider.catalogue(str(entry["catalogue_url"]))
+            except Exception as exc:
+                catalogue = self._offline_catalogue(entry)
+                if catalogue is None:
+                    raise
+                offline = True
+                self.cli.warning(
+                    f"{provider.name} is unavailable ({exc}); continuing from the local download."
+                )
 
-        with self.cli.status(f"Refreshing {provider.name}..."):
-            catalogue = provider.catalogue(str(entry["catalogue_url"]))
-        current = self._sync_history(catalogue)
+        current = dict(entry) if offline else self._sync_history(catalogue)
         if current is None:
             self.cli.warning("This title is no longer present in your watch history.")
             self.cli.pause()
@@ -132,6 +190,70 @@ class Application:
         episode = int(current.get("current_episode", 1) or 1)
         self.cli.info(f"Resuming {catalogue.title} at episode {episode}...")
         self._watch(catalogue, start_episode=episode)
+
+    def _offline_catalogue(self, entry: dict) -> Catalogue | None:
+        try:
+            current_episode = max(1, int(entry.get("current_episode", 1) or 1))
+            total_episodes = max(current_episode, int(entry.get("total_episodes", current_episode) or current_episode))
+        except (TypeError, ValueError):
+            return None
+        language_label = str(entry.get("language") or "Unknown")
+        language_code = str(entry.get("language_code") or language_label.casefold().replace(" ", "-") or "unknown")
+        catalogue = Catalogue(
+            provider_id=str(entry.get("provider_id") or "local"),
+            provider_name=str(entry.get("provider_name") or "Local library"),
+            title=str(entry.get("title") or "Unknown title"),
+            url=str(entry.get("catalogue_url") or "local://library"),
+            season=str(entry.get("season") or "Unknown season"),
+            language=MediaLanguage(language_code, language_label),
+            episodes=tuple(Episode(number, ()) for number in range(1, total_episodes + 1)),
+        )
+        return catalogue if self._local_episode_path(catalogue, current_episode).is_file() else None
+
+    def _local_episode_path(self, catalogue: Catalogue, episode: int) -> Path:
+        folder = media_directory(
+            self.settings.download_directory(),
+            catalogue.title,
+            catalogue.season,
+            catalogue.language.label,
+        )
+        return folder / f"Episode {episode:03d}.mp4"
+
+    def _local_episode_media(self, catalogue: Catalogue, episode: int) -> ResolvedMedia | None:
+        path = self._local_episode_path(catalogue, episode)
+        if not path.is_file():
+            return None
+        has_online_fallback = (
+            1 <= episode <= len(catalogue.episodes)
+            and bool(catalogue.episodes[episode - 1].candidates)
+        )
+        fallback = "using online sources" if has_online_fallback else "no online fallback is available"
+        ffprobe = self.settings.executable("ffprobe_path", "ffprobe")
+        if not ffprobe:
+            self.cli.warning(
+                f"Downloaded episode {episode} was found, but FFprobe is unavailable; {fallback}."
+            )
+            return None
+        try:
+            validation = MediaValidator(ffprobe).validate(path)
+        except Exception as exc:
+            self.cli.warning(
+                f"Downloaded episode {episode} could not be verified ({exc}); {fallback}."
+            )
+            return None
+        if not validation.valid:
+            self.cli.warning(
+                f"Downloaded episode {episode} failed MP4 validation ({validation.detail}); {fallback}."
+            )
+            return None
+        self.cli.success(f"Using verified local file for episode {episode}")
+        resolved = path.resolve()
+        return ResolvedMedia(
+            url=str(resolved),
+            embed_url=str(resolved),
+            resolver_name="Local file",
+            kind="local",
+        )
 
     def _open(self, provider, url: str) -> None:
         with self.cli.status(f"Loading {provider.name}..."):
@@ -235,7 +357,13 @@ class Application:
             self.settings.set("ffprobe_path", ffprobe)
         return ffmpeg, ffprobe
 
-    def _watch(self, catalogue: Catalogue, *, start_episode: int | None = None) -> None:
+    def _watch(
+        self,
+        catalogue: Catalogue,
+        *,
+        start_episode: int | None = None,
+        episode_sequence: tuple[int, ...] | None = None,
+    ) -> None:
         display = self.settings.get("watch_display")
         if display not in {"window", "terminal"}:
             self.cli.info("Terminal video uses low-resolution Unicode rendering and is not supported by every terminal.")
@@ -262,6 +390,15 @@ class Application:
         default = int(current.get("current_episode", 1) or 1)
         if default > len(catalogue.episodes):
             default = len(catalogue.episodes)
+        play_order = (
+            tuple(sorted({number for number in episode_sequence if 1 <= number <= len(catalogue.episodes)}))
+            if episode_sequence is not None
+            else tuple(range(1, len(catalogue.episodes) + 1))
+        )
+        if not play_order:
+            self.cli.error("No playable local episodes are available for this title.")
+            self.cli.pause()
+            return
         if start_episode is None:
             selection = self.cli.episodes(len(catalogue.episodes), single=True, default=default)
             if not selection:
@@ -269,10 +406,17 @@ class Application:
             number = selection[0]
         else:
             number = min(len(catalogue.episodes), max(1, int(start_episode)))
-        while 1 <= number <= len(catalogue.episodes):
+        if number not in play_order:
+            number = next((candidate for candidate in play_order if candidate >= number), play_order[-1])
+        order_index = play_order.index(number)
+        while order_index < len(play_order):
+            number = play_order[order_index]
             episode = catalogue.episodes[number - 1]
-            with self.cli.status("Checking stream sources..."):
-                plan = self.planner.plan(catalogue, [number])
+            local_media = self._local_episode_media(catalogue, number)
+            plan = None
+            if local_media is None:
+                with self.cli.status("Checking stream sources..."):
+                    plan = self.planner.plan(catalogue, [number])
             player = PlaybackService(
                 mpv_path=mpv,
                 display_mode=display,
@@ -281,9 +425,20 @@ class Application:
                 probe=self.probe,
             )
             try:
-                finished = player.play(catalogue, episode, plan, self.cli.info)
+                finished = player.play(
+                    catalogue,
+                    episode,
+                    plan,
+                    self.cli.info,
+                    preferred_media=local_media,
+                )
             except ToolNotFoundError as exc:
                 self.cli.error(str(exc))
+                self.cli.pause()
+                return
+            except (PlaybackError, ResolverError) as exc:
+                self.cli.error(f"Episode {number} could not be played: {exc}")
+                self.cli.info("Your watch progress is safe. You can retry this episode later.")
                 self.cli.pause()
                 return
             if not finished:
@@ -291,12 +446,13 @@ class Application:
                 self.cli.pause()
                 return
             self.cli.success(f"Episode {number} marked as watched")
-            if number >= len(catalogue.episodes) or not self.cli.confirm(
-                f"Play episode {number + 1} now?", default=True
+            next_number = play_order[order_index + 1] if order_index + 1 < len(play_order) else None
+            if next_number is None or not self.cli.confirm(
+                f"Play episode {next_number} now?", default=True
             ):
                 self.cli.pause()
                 return
-            number += 1
+            order_index += 1
 
 
 def main() -> int:

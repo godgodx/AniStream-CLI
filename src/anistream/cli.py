@@ -24,6 +24,7 @@ from rich.text import Text
 from anistream.models import Catalogue, CatalogueVariant, DownloadResult, SearchResult
 from anistream.services.downloader import DownloadProgress
 from anistream.services.history import HistoryStore
+from anistream.services.local_library import LocalLibraryEntry
 from anistream.services.settings import SettingsStore
 
 
@@ -479,12 +480,13 @@ class Cli:
         )
         table = Table(box=None, show_header=False, padding=(0, 2), pad_edge=False)
         table.add_row("[bold bright_green]1[/]", "[bold]Continue Watching[/]", library_summary)
-        table.add_row("[bold cyan]2[/]", "Link", "Open a supported catalogue URL")
-        table.add_row("[bold cyan]3[/]", "Search", "Search across every enabled site")
-        table.add_row("[bold cyan]4[/]", "Settings", "Change saved preferences")
+        table.add_row("[bold cyan]2[/]", "Search", "Search across every enabled site")
+        table.add_row("[bold cyan]3[/]", "Local", "Browse downloaded movies and series")
+        table.add_row("[bold cyan]4[/]", "Link", "Open a supported catalogue URL")
+        table.add_row("[bold cyan]5[/]", "Settings", "Change saved preferences")
         self.console.print(Align.center(table))
 
-        return self.ask("Choose", choices=["1", "2", "3", "4", "q"], default="1")
+        return self.ask("Choose", choices=["1", "2", "3", "4", "5", "q"], default="1")
 
     def choose_item(
         self,
@@ -596,6 +598,86 @@ class Cli:
             )
         self.console.print(Align.center(table))
         self.console.print(Align.center(Text("Select an in-progress title to resume it immediately.", style="dim")))
+        while True:
+            choice = self.ask_int("Select (0 = Back)", default=1)
+            if choice == 0:
+                return None
+            if 1 <= choice <= len(entries):
+                return entries[choice - 1]
+            self.error("Invalid selection")
+
+    def choose_local_entry(self, entries: list[LocalLibraryEntry]) -> LocalLibraryEntry | None:
+        self.clear_screen()
+        if not entries:
+            self.console.print(
+                Align.center(
+                    Panel.fit(
+                        (
+                            "No downloaded movies or series were found.\n"
+                            "Completed MP4 downloads will appear here automatically."
+                        ),
+                        title="[bold bright_cyan]Local Library[/]",
+                        border_style="bright_blue",
+                        box=box.ROUNDED,
+                        padding=(1, 2),
+                    )
+                )
+            )
+            self.pause()
+            return None
+
+        episode_count = sum(len(item.episodes) for item in entries)
+        title_word = "title" if len(entries) == 1 else "titles"
+        episode_word = "episode file" if episode_count == 1 else "episode files"
+        table = Table(
+            title=f"Local Library \u2022 {len(entries)} {title_word} \u2022 {episode_count} {episode_word}",
+            box=box.ROUNDED,
+            header_style="bold bright_cyan",
+            padding=(0, 1),
+        )
+        table.add_column("#", justify="right", style="cyan", no_wrap=True)
+        table.add_column("Status", no_wrap=True)
+        table.add_column("Title", max_width=38, overflow="fold")
+        table.add_column("Available", max_width=24, overflow="fold")
+        table.add_column("Next", max_width=28, overflow="fold")
+        for index, item in enumerate(entries, 1):
+            if item.status == "completed":
+                status = "[bold green]Completed[/]"
+                next_action = f"Watch again from episode {item.resume_episode}"
+            elif item.status == "in_progress":
+                status = "[bold yellow]In progress[/]"
+                next_action = f"Resume episode {item.resume_episode}"
+                history_episode = _non_negative_int((item.history or {}).get("current_episode", 0))
+                position = _non_negative_int((item.history or {}).get("position", 0))
+                if history_episode == item.resume_episode and position:
+                    hours, remainder = divmod(position, 3600)
+                    minutes, seconds = divmod(remainder, 60)
+                    clock = f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes}:{seconds:02d}"
+                    next_action += f" \u2022 {clock}"
+                elif history_episode and history_episode != item.resume_episode:
+                    next_action += f"\n[dim]saved episode {history_episode} is not local[/]"
+            else:
+                status = "[bold cyan]Not started[/]"
+                next_action = f"Start episode {item.resume_episode}"
+            media_type = "Movie" if item.episodes == (1,) else "Series"
+            metadata = f"{media_type} \u2022 {item.season} \u2022 {item.language}"
+            available = format_episode_ranges(item.episodes)
+            table.add_row(
+                str(index),
+                status,
+                f"[bold]{escape(item.title)}[/]\n[dim]{escape(metadata)}[/]",
+                f"{len(item.episodes)} file{'s' if len(item.episodes) != 1 else ''}\n[dim]{escape(available)}[/]",
+                next_action,
+            )
+        self.console.print(Align.center(table))
+        self.console.print(
+            Align.center(
+                Text(
+                    "Selecting a title starts or resumes it immediately from verified local media.",
+                    style="dim",
+                )
+            )
+        )
         while True:
             choice = self.ask_int("Select (0 = Back)", default=1)
             if choice == 0:
