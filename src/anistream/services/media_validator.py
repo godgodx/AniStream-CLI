@@ -22,6 +22,49 @@ class MediaValidator:
     def __init__(self, ffprobe_path: str) -> None:
         self.ffprobe_path = ffprobe_path
 
+    def probe_duration(self, url: str, headers: dict[str, str]) -> float:
+        header_blob = "".join(f"{key}: {value}\r\n" for key, value in headers.items() if value)
+        command = [self.ffprobe_path, "-v", "error"]
+        if header_blob:
+            command.extend(["-headers", header_blob])
+        command.extend(
+            [
+                "-show_entries",
+                "format=duration:stream=duration",
+                "-of",
+                "json",
+                url,
+            ]
+        )
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=15,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return 0.0
+        if completed.returncode != 0:
+            return 0.0
+        try:
+            payload = json.loads(completed.stdout)
+        except json.JSONDecodeError:
+            return 0.0
+        candidates = [payload.get("format", {}).get("duration")]
+        candidates.extend(item.get("duration") for item in payload.get("streams", []) if isinstance(item, dict))
+        durations: list[float] = []
+        for value in candidates:
+            try:
+                duration = float(value or 0)
+            except (TypeError, ValueError):
+                continue
+            if duration > 0:
+                durations.append(duration)
+        return max(durations, default=0.0)
+
     def validate(self, path: Path) -> ValidationResult:
         if path.suffix.lower() != ".mp4":
             return ValidationResult(False, "output extension is not .mp4")

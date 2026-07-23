@@ -69,6 +69,68 @@ class SourcePlannerTests(unittest.TestCase):
         plan = SourcePlanner(FakeRegistry(), FakeProbe()).plan(altered, [1, 2])
         self.assertIsNone(plan.primary_player)
         self.assertIn((1, "https://embed/good-1"), plan.cache)
+        self.assertEqual(plan.verified_episodes, (1,))
+        self.assertEqual(plan.missing_episodes, (2,))
+        self.assertFalse(plan.complete)
+
+    def test_rebuilds_complete_coverage_from_partial_players(self):
+        data = catalogue()
+        partial = Catalogue(
+            data.provider_id,
+            data.provider_name,
+            data.title,
+            data.url,
+            data.season,
+            data.language,
+            (
+                Episode(1, (EmbedCandidate("Player 1", "https://embed/good-1"),)),
+                Episode(2, (EmbedCandidate("Player 2", "https://embed/good-2"),)),
+            ),
+        )
+
+        plan = SourcePlanner(FakeRegistry(), FakeProbe()).plan(partial, [1, 2])
+
+        self.assertIsNone(plan.primary_player)
+        self.assertTrue(plan.complete)
+        self.assertEqual(plan.verified_episodes, (1, 2))
+        self.assertEqual(plan.missing_episodes, ())
+        self.assertEqual(plan.players_used, ("Player 1", "Player 2"))
+        self.assertEqual(plan.routes[1][0].player, "Player 1")
+        self.assertEqual(plan.routes[2][0].player, "Player 2")
+
+    def test_rebuilds_complete_coverage_from_complementary_working_links(self):
+        data = catalogue()
+        complementary = Catalogue(
+            data.provider_id,
+            data.provider_name,
+            data.title,
+            data.url,
+            data.season,
+            data.language,
+            (
+                Episode(
+                    1,
+                    (
+                        EmbedCandidate("Player 1", "https://embed/good-1"),
+                        EmbedCandidate("Player 2", "https://embed/broken-1"),
+                    ),
+                ),
+                Episode(
+                    2,
+                    (
+                        EmbedCandidate("Player 1", "https://embed/broken-2"),
+                        EmbedCandidate("Player 2", "https://embed/good-2"),
+                    ),
+                ),
+            ),
+        )
+
+        plan = SourcePlanner(FakeRegistry(), FakeProbe()).plan(complementary, [1, 2])
+
+        self.assertTrue(plan.complete)
+        self.assertEqual(plan.players_used, ("Player 1", "Player 2"))
+        self.assertEqual(plan.routes[1][0].player, "Player 1")
+        self.assertEqual(plan.routes[2][0].player, "Player 2")
 
 
 if __name__ == "__main__":

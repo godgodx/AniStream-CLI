@@ -1,9 +1,10 @@
 import unittest
 from contextlib import nullcontext
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from anistream.app import Application
 from anistream.models import Catalogue, Episode, MediaLanguage
+from anistream.services.source_planner import SourcePlan
 
 
 class FakeHistory:
@@ -174,6 +175,38 @@ class EntryScreenTests(unittest.TestCase):
             "Open a link",
             "Paste a catalogue URL from any enabled site.",
         )
+
+
+class DownloadCoverageTests(unittest.TestCase):
+    @patch("anistream.app.DownloadManager")
+    def test_declining_incomplete_coverage_stops_before_transfer(self, manager):
+        app = Application.__new__(Application)
+        app.cli = Mock()
+        app.cli.episodes.return_value = [1, 2]
+        app.cli.confirm_incomplete_download.return_value = False
+        app.cli.status.return_value = nullcontext()
+        app._download_tools = Mock(return_value=("ffmpeg", "ffprobe"))
+        app.settings = Mock()
+        app.settings.get.return_value = "sequential"
+        app.planner = Mock()
+        app.planner.plan.return_value = SourcePlan(
+            primary_player=None,
+            routes={1: [], 2: []},
+            verified_episodes=(1,),
+            missing_episodes=(2,),
+            players_used=("Player 1",),
+        )
+
+        app._download(catalogue())
+
+        app.cli.confirm_incomplete_download.assert_called_once_with([1, 2], (2,))
+        app.cli.warning.assert_called_once_with(
+            "Verified 1/2 selected episodes across every player"
+        )
+        app.cli.info.assert_called_once_with(
+            "Download cancelled before any transfer started"
+        )
+        manager.assert_not_called()
 
 
 if __name__ == "__main__":

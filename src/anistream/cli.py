@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from threading import RLock
 from typing import Any, Iterable, Mapping, Sequence, TypeVar
 
 from rich import box
@@ -10,6 +12,7 @@ from rich.align import Align
 from rich.console import Console, Group
 from rich.live import Live
 from rich.markup import escape
+from rich.padding import Padding
 from rich.panel import Panel
 from rich.prompt import Confirm as RichConfirm
 from rich.prompt import IntPrompt as RichIntPrompt
@@ -19,6 +22,7 @@ from rich.table import Table
 from rich.text import Text
 
 from anistream.models import Catalogue, CatalogueVariant, DownloadResult, SearchResult
+from anistream.services.downloader import DownloadProgress
 from anistream.services.history import HistoryStore
 from anistream.services.settings import SettingsStore
 
@@ -94,6 +98,22 @@ def format_last_watched(value: object) -> str:
     return timestamp.strftime("%b %d, %Y · %H:%M")
 
 
+def format_episode_ranges(episodes: Iterable[int]) -> str:
+    numbers = sorted(set(episodes))
+    if not numbers:
+        return "none"
+    ranges: list[str] = []
+    start = previous = numbers[0]
+    for number in numbers[1:]:
+        if number == previous + 1:
+            previous = number
+            continue
+        ranges.append(str(start) if start == previous else f"{start}-{previous}")
+        start = previous = number
+    ranges.append(str(start) if start == previous else f"{start}-{previous}")
+    return ", ".join(ranges)
+
+
 class CenteredStatus:
     def __init__(self, console: Console, message: str) -> None:
         self.console = console
@@ -118,6 +138,187 @@ class CenteredStatus:
         self.live.update(self.renderable, refresh=True)
 
     def __enter__(self) -> "CenteredStatus":
+        self.live.start()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.live.stop()
+
+
+@dataclass(slots=True)
+class _DownloadRow:
+    state: str = "waiting"
+    detail: str = "Queued"
+    percent: float | None = None
+    downloaded_bytes: int | None = None
+    bytes_per_second: float | None = None
+    eta_seconds: float | None = None
+    sequence: int = 0
+
+
+class DownloadProgressDisplay:
+    _terminal_states = {"completed", "skipped", "failed"}
+    _reset_states = {"preparing", "resolving", "retrying", "failed"}
+    _state_labels = {
+        "waiting": ("Waiting", "dim"),
+        "preparing": ("Preparing", "cyan"),
+        "resolving": ("Resolving", "cyan"),
+        "downloading": ("Downloading", "bright_blue"),
+        "verifying": ("Verifying", "magenta"),
+        "retrying": ("Failover", "yellow"),
+        "completed": ("Completed", "green"),
+        "skipped": ("Verified", "yellow"),
+        "failed": ("Failed", "red"),
+    }
+
+    def __init__(self, console: Console, episodes: Sequence[int]) -> None:
+        self.console = console
+        self.rows = {episode: _DownloadRow() for episode in episodes}
+        self._sequence = 0
+        self._lock = RLock()
+        self.live = Live(
+            self.renderable,
+            console=console,
+            refresh_per_second=10,
+            transient=True,
+        )
+
+    def update(self, update: DownloadProgress) -> None:
+        with self._lock:
+            row = self.rows.setdefault(update.episode, _DownloadRow())
+            self._sequence += 1
+            row.sequence = self._sequence
+            row.state = update.state
+            row.detail = update.detail
+            if update.state in self._reset_states:
+                row.percent = None
+                row.downloaded_bytes = None
+                row.bytes_per_second = None
+                row.eta_seconds = None
+            if update.percent is not None:
+                row.percent = max(0.0, min(100.0, update.percent))
+            if update.downloaded_bytes is not None:
+                row.downloaded_bytes = max(0, update.downloaded_bytes)
+            if update.bytes_per_second is not None:
+                row.bytes_per_second = max(0.0, update.bytes_per_second)
+            if update.eta_seconds is not None:
+                row.eta_seconds = max(0.0, update.eta_seconds)
+            if self.live.is_started:
+                self.live.update(self.renderable, refresh=True)
+
+    @property
+    def renderable(self) -> Align:
+        compact = self.console.size.width < 96
+        table = Table(box=box.SIMPLE, show_edge=False, pad_edge=False, collapse_padding=True)
+        table.add_column("Episode", justify="right", style="bold cyan", no_wrap=True)
+        table.add_column("Status", no_wrap=True)
+        table.add_column("Progress", no_wrap=True)
+        if not compact:
+            table.add_column("Downloaded", justify="right", no_wrap=True)
+        table.add_column("Speed", justify="right", no_wrap=True)
+        table.add_column("ETA", justify="right", no_wrap=True)
+
+        visible, hidden = self._visible_rows()
+        for episode, row in visible:
+            label, style = self._state_labels.get(row.state, (row.state.title(), "white"))
+            status = Text(label, style=f"bold {style}")
+            if row.detail:
+                status.append(f"\n{row.detail}", style="dim")
+            cells = [
+                str(episode),
+                status,
+                self._progress_bar(row.percent, compact),
+            ]
+            if not compact:
+                cells.append(self._format_bytes(row.downloaded_bytes))
+            cells.extend(
+                [
+                    self._format_speed(row.bytes_per_second),
+                    self._format_eta(row.eta_seconds),
+                ]
+            )
+            table.add_row(*cells)
+        if hidden:
+            span = 6 if not compact else 5
+            table.add_row(
+                "",
+                Text(f"… {hidden} queued episode(s) not shown", style="dim"),
+                *("" for _ in range(span - 2)),
+            )
+
+        completed = sum(row.state in self._terminal_states for row in self.rows.values())
+        active = sum(row.state not in self._terminal_states | {"waiting"} for row in self.rows.values())
+        subtitle = f"{completed}/{len(self.rows)} finished"
+        if active:
+            subtitle += f" · {active} active"
+        panel = Panel.fit(
+            table,
+            title="[bold bright_cyan]Download progress[/]",
+            subtitle=f"[dim]{subtitle}[/]",
+            border_style="bright_blue",
+            box=box.ROUNDED,
+            padding=(0, 1),
+        )
+        # Panel.fit overestimates this table by one cell; left padding keeps the
+        # visible border mathematically centered at both odd and even widths.
+        return Align.center(Padding(panel, (0, 0, 0, 1)))
+
+    def _visible_rows(self) -> tuple[list[tuple[int, _DownloadRow]], int]:
+        maximum = max(4, self.console.size.height - 10)
+        items = list(self.rows.items())
+        if len(items) <= maximum:
+            return items, 0
+        active = [(episode, row) for episode, row in items if row.state != "waiting"]
+        waiting = [(episode, row) for episode, row in items if row.state == "waiting"]
+        active.sort(key=lambda item: (item[1].state in self._terminal_states, -item[1].sequence))
+        selected = active[: maximum - 1]
+        remaining = maximum - 1 - len(selected)
+        selected.extend(waiting[:remaining])
+        selected.sort(key=lambda item: item[0])
+        return selected, len(items) - len(selected)
+
+    @staticmethod
+    def _progress_bar(percent: float | None, compact: bool) -> Text:
+        width = 12 if compact else 20
+        if percent is None:
+            bar = Text("[" + "-" * width + "]", style="grey50")
+            bar.append("  --.-%", style="dim")
+            return bar
+        filled = min(width, max(0, round(width * percent / 100)))
+        bar = Text("[", style="dim")
+        bar.append("=" * filled, style="bold bright_cyan")
+        bar.append("-" * (width - filled), style="grey50")
+        bar.append("]", style="dim")
+        bar.append(f" {percent:6.1f}%", style="bold white")
+        return bar
+
+    @staticmethod
+    def _format_bytes(value: int | None) -> str:
+        if value is None:
+            return "—"
+        size = float(value)
+        for unit in ("B", "KiB", "MiB", "GiB"):
+            if size < 1024 or unit == "GiB":
+                return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
+            size /= 1024
+        return "—"
+
+    @classmethod
+    def _format_speed(cls, value: float | None) -> str:
+        if value is None or value <= 0:
+            return "—"
+        return f"{cls._format_bytes(int(value))}/s"
+
+    @staticmethod
+    def _format_eta(value: float | None) -> str:
+        if value is None:
+            return "—"
+        seconds = max(0, round(value))
+        hours, remainder = divmod(seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes:02d}:{seconds:02d}"
+
+    def __enter__(self) -> "DownloadProgressDisplay":
         self.live.start()
         return self
 
@@ -486,6 +687,40 @@ class Cli:
             self.warning(summary + f" • {failed} failed")
         else:
             self.success(summary)
+
+    def download_progress(self, episodes: Sequence[int]) -> DownloadProgressDisplay:
+        return DownloadProgressDisplay(self.console, episodes)
+
+    def confirm_incomplete_download(self, selected: Sequence[int], missing: Sequence[int]) -> bool:
+        verified = len(selected) - len(missing)
+        content = Group(
+            Text(
+                f"Verified coverage: {verified}/{len(selected)} episodes",
+                style="bold yellow",
+                justify="center",
+            ),
+            Text(""),
+            Text(
+                f"Missing after every supported source was checked: {format_episode_ranges(missing)}",
+                style="bold red",
+                justify="center",
+            ),
+            Text(
+                "AniStream will retry those episodes during transfer, but they may remain missing.",
+                style="dim",
+                justify="center",
+            ),
+        )
+        panel = Panel.fit(
+            content,
+            title="[bold yellow]Incomplete source coverage[/]",
+            border_style="yellow",
+            box=box.ROUNDED,
+            padding=(1, 2),
+        )
+        self.console.print()
+        self.console.print(Align.center(panel))
+        return self.confirm("Continue with an incomplete download?", default=False)
 
     def settings_menu(self) -> None:
         while True:

@@ -1,10 +1,22 @@
+import io
 import unittest
 from unittest.mock import Mock, patch
 
 from rich.console import Console
 
-from anistream.cli import Confirm, IntPrompt, Prompt, WORDMARK, Cli, format_watch_progress, parse_episode_selection
+from anistream.cli import (
+    Confirm,
+    DownloadProgressDisplay,
+    IntPrompt,
+    Prompt,
+    WORDMARK,
+    Cli,
+    format_episode_ranges,
+    format_watch_progress,
+    parse_episode_selection,
+)
 from anistream.models import CatalogueVariant, MediaLanguage
+from anistream.services.downloader import DownloadProgress
 
 
 class EpisodeSelectionTests(unittest.TestCase):
@@ -19,6 +31,10 @@ class EpisodeSelectionTests(unittest.TestCase):
     def test_out_of_range_is_rejected(self):
         with self.assertRaises(ValueError):
             parse_episode_selection("0,2,9", 4)
+
+    def test_episode_ranges_are_compact_and_readable(self):
+        self.assertEqual(format_episode_ranges([8, 2, 1, 3, 7, 5, 2]), "1-3, 5, 7-8")
+        self.assertEqual(format_episode_ranges([]), "none")
 
 
 class WatchProgressFormattingTests(unittest.TestCase):
@@ -157,6 +173,77 @@ class LoadingRenderingTests(unittest.TestCase):
         content = len(line.strip())
         right = 100 - left - content
         self.assertLessEqual(abs(left - right), 1)
+
+
+class DownloadProgressRenderingTests(unittest.TestCase):
+    def test_parallel_progress_is_centered_and_shows_useful_transfer_details(self):
+        console = Console(width=120, height=30, record=True, color_system=None, file=io.StringIO())
+        display = DownloadProgressDisplay(console, [1, 2, 3])
+        display.update(
+            DownloadProgress(
+                1,
+                "downloading",
+                "Vidmoly · vidmoly.to",
+                percent=42.5,
+                downloaded_bytes=64 * 1024 * 1024,
+                bytes_per_second=8 * 1024 * 1024,
+                eta_seconds=92,
+            )
+        )
+        display.update(DownloadProgress(2, "retrying", "Vidzy failed · trying next source"))
+        console.print(display.renderable)
+
+        output = console.export_text(styles=False)
+        self.assertIn("Download progress", output)
+        self.assertIn("42.5%", output)
+        self.assertIn("64.0 MiB", output)
+        self.assertIn("8.0 MiB/s", output)
+        self.assertIn("01:32", output)
+        self.assertIn("Failover", output)
+        title_line = next(line for line in output.splitlines() if "Download progress" in line)
+        left = len(title_line) - len(title_line.lstrip())
+        content = len(title_line.strip())
+        right = 120 - left - content
+        self.assertLessEqual(abs(left - right), 1)
+
+    def test_unknown_duration_never_invents_a_percentage(self):
+        console = Console(width=90, height=20, record=True, color_system=None, file=io.StringIO())
+        display = DownloadProgressDisplay(console, [1])
+        display.update(
+            DownloadProgress(
+                1,
+                "downloading",
+                "Uqload · uqload.is",
+                downloaded_bytes=2 * 1024 * 1024,
+                bytes_per_second=512 * 1024,
+            )
+        )
+        console.print(display.renderable)
+
+        output = console.export_text(styles=False)
+        self.assertIn("--.-%", output)
+        self.assertNotIn("0.0%", output)
+
+
+class IncompleteDownloadRenderingTests(unittest.TestCase):
+    def test_warning_is_centered_lists_missing_episodes_and_defaults_to_cancel(self):
+        cli = Cli.__new__(Cli)
+        cli.console = Console(width=100, record=True, color_system=None)
+
+        with patch("anistream.cli.Confirm.ask", return_value=False) as ask:
+            accepted = cli.confirm_incomplete_download(
+                list(range(1, 13)),
+                [3, 4, 5, 9],
+            )
+
+        self.assertFalse(accepted)
+        output = cli.console.export_text(styles=False)
+        self.assertIn("Incomplete source coverage", output)
+        self.assertIn("Verified coverage: 8/12 episodes", output)
+        self.assertIn("3-5, 9", output)
+        panel_line = next(line for line in output.splitlines() if "Incomplete source coverage" in line)
+        self.assertGreater(len(panel_line) - len(panel_line.lstrip()), 5)
+        self.assertFalse(ask.call_args.kwargs["default"])
 
 
 class NotificationRenderingTests(unittest.TestCase):

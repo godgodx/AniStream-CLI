@@ -178,12 +178,24 @@ class Application:
             )
             self.settings.set("download_mode", mode)
 
-        with self.cli.status("Finding the first source with 100% working links..."):
+        with self.cli.status("Verifying episode coverage across available players..."):
             plan = self.planner.plan(catalogue, selected, progress=self.cli.info)
         if plan.primary_player:
             self.cli.success(f"Selected {plan.primary_player}: every selected episode passed preflight")
+        elif plan.complete:
+            player_count = len(plan.players_used)
+            noun = "player" if player_count == 1 else "players"
+            self.cli.success(
+                f"Rebuilt complete episode coverage using {player_count} verified {noun}"
+            )
         else:
-            self.cli.warning("No single player passed 100%; using the best verified source per episode")
+            self.cli.warning(
+                f"Verified {len(plan.verified_episodes)}/{len(selected)} selected episodes across every player"
+            )
+            if not self.cli.confirm_incomplete_download(selected, plan.missing_episodes):
+                self.cli.info("Download cancelled before any transfer started")
+                self.cli.pause()
+                return
         manager = DownloadManager(
             ffmpeg_path=ffmpeg,
             validator=MediaValidator(ffprobe),
@@ -192,13 +204,14 @@ class Application:
             download_root=self.settings.download_directory(),
             parallel_downloads=int(self.settings.get("parallel_downloads", 3)),
         )
-        results = manager.download(
-            catalogue,
-            selected,
-            plan,
-            parallel=mode == "parallel",
-            event=lambda episode, message: self.cli.info(f"Episode {episode}: {message}"),
-        )
+        with self.cli.download_progress(selected) as progress:
+            results = manager.download(
+                catalogue,
+                selected,
+                plan,
+                parallel=mode == "parallel",
+                progress=progress.update,
+            )
         self.cli.download_report(results)
         self.cli.pause()
 

@@ -28,6 +28,13 @@ class SourcePlan:
     routes: dict[int, list[EmbedCandidate]]
     cache: dict[tuple[int, str], ResolvedMedia] = field(default_factory=dict)
     preflight: list[PreflightResult] = field(default_factory=list)
+    verified_episodes: tuple[int, ...] = ()
+    missing_episodes: tuple[int, ...] = ()
+    players_used: tuple[str, ...] = ()
+
+    @property
+    def complete(self) -> bool:
+        return not self.missing_episodes
 
 
 class SourcePlanner:
@@ -67,21 +74,27 @@ class SourcePlanner:
                 number: next((item for item in episode.candidates if item.player == player), None)
                 for number, episode in selected.items()
             }
-            if any(candidate is None for candidate in candidates.values()):
-                records.extend(
-                    PreflightResult(number, EmbedCandidate(player, ""), None, False, "episode missing from player")
-                    for number, candidate in candidates.items()
-                    if candidate is None
-                )
+            missing = [number for number, candidate in candidates.items() if candidate is None]
+            records.extend(
+                PreflightResult(number, EmbedCandidate(player, ""), None, False, "episode missing from player")
+                for number in missing
+            )
+            available = {number: candidate for number, candidate in candidates.items() if candidate is not None}
+            if not available:
                 continue
             if progress:
-                progress(f"Checking {player} across {len(candidates)} episode(s)...")
-            current = self._check_player({number: candidate for number, candidate in candidates.items() if candidate})
+                coverage = (
+                    f"{len(available)}/{len(selected)} selected episode(s)"
+                    if missing
+                    else f"{len(available)} episode(s)"
+                )
+                progress(f"Checking {player} across {coverage}...")
+            current = self._check_player(available)
             records.extend(current)
             for result in current:
                 if result.valid and result.media:
                     cache[(result.episode, result.candidate.url)] = result.media
-            if len(current) == len(candidates) and all(item.valid for item in current):
+            if not missing and len(current) == len(selected) and all(item.valid for item in current):
                 primary = player
                 break
 
@@ -93,7 +106,20 @@ class SourcePlanner:
             else:
                 ordered.sort(key=lambda item: 0 if (number, item.url) in cache else 1)
             routes[number] = [candidate for candidate in ordered if self.resolvers.supports(candidate.url)]
-        return SourcePlan(primary, routes, cache, records)
+        verified = tuple(
+            sorted(
+                number
+                for number in selected
+                if any((number, candidate.url) in cache for candidate in selected[number].candidates)
+            )
+        )
+        missing = tuple(sorted(set(selected) - set(verified)))
+        players_used = tuple(
+            player
+            for player in players
+            if any(result.valid and result.candidate.player == player for result in records)
+        )
+        return SourcePlan(primary, routes, cache, records, verified, missing, players_used)
 
     def _check_player(self, candidates: dict[int, EmbedCandidate]) -> list[PreflightResult]:
         results: list[PreflightResult] = []

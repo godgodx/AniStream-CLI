@@ -22,6 +22,7 @@ AniStream CLI is a provider-driven media client with source preflight checks, au
 - **Multi-provider search** — search every enabled catalogue concurrently and keep each result clearly attributed to its source site.
 - **Source preflight planning** — select the first embed that works for every requested episode, or the best verified route per episode.
 - **Automatic download failover** — if resolution, probing, FFmpeg, or output validation fails, retry the missing episode through the next supported source.
+- **Live transfer progress** — follow every episode with a centered percentage bar, transferred size, download speed, ETA, and current failover state.
 - **Verified output** — temporary files are promoted only after FFprobe confirms a playable MP4 container with video.
 - **Sequential or parallel batches** — choose once, then change the saved preference later in Settings.
 - **Watch mode with mpv** — stream without creating a download, resume interrupted playback, track completed episodes, and offer the next episode.
@@ -174,6 +175,10 @@ Downloads use a hidden partial file and are finalized as `Episode 001.mp4` only 
 - a valid video codec and dimensions.
 
 Existing valid episodes are skipped. Invalid or incomplete files are replaced safely.
+
+During transfer, a centered live panel tracks each active episode without flooding the terminal. Percentage and ETA use the media duration reported by FFprobe; when a host does not expose a reliable duration, AniStream still reports transferred size, speed, and state without inventing a percentage.
+
+If no single player covers the entire selection, AniStream combines verified episodes from multiple players before transferring anything. When their combined coverage is still incomplete, it lists the missing episodes and requires explicit confirmation before continuing; the missing episodes are retried during transfer in case a source has recovered.
 
 ### Watch
 

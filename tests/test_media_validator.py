@@ -37,6 +37,29 @@ class MediaValidatorTests(unittest.TestCase):
         self.assertTrue(result.valid)
         self.assertIn("h264", result.detail)
 
+    def test_remote_duration_uses_the_longest_reported_duration(self):
+        completed = SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "format": {"duration": "1439.5"},
+                    "streams": [{"duration": "1440.0"}, {"duration": "1438.0"}],
+                }
+            ),
+            stderr="",
+        )
+        with patch("anistream.services.media_validator.subprocess.run", return_value=completed) as run:
+            duration = MediaValidator("ffprobe").probe_duration(
+                "https://media.example/episode.m3u8",
+                {"Referer": "https://embed.example/"},
+            )
+
+        self.assertEqual(duration, 1440.0)
+        command = run.call_args.args[0]
+        self.assertIn("-headers", command)
+        self.assertEqual(command[-1], "https://media.example/episode.m3u8")
+        self.assertEqual(run.call_args.kwargs["timeout"], 15)
+
 
 if __name__ == "__main__":
     unittest.main()
