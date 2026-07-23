@@ -4,6 +4,7 @@ from unittest.mock import Mock, patch
 from rich.console import Console
 
 from anistream.cli import Confirm, IntPrompt, Prompt, WORDMARK, Cli, format_watch_progress, parse_episode_selection
+from anistream.models import CatalogueVariant, MediaLanguage
 
 
 class EpisodeSelectionTests(unittest.TestCase):
@@ -125,6 +126,22 @@ class ScreenNavigationTests(unittest.TestCase):
         self.assertGreater(len(option_line) - len(option_line.lstrip()), 10)
         prompt = ask.call_args.args[0]
         self.assertGreater(len(prompt.plain) - len(prompt.plain.lstrip()), 10)
+
+    def test_variant_menu_uses_structured_language_metadata(self):
+        cli = Cli.__new__(Cli)
+        cli.console = Console(width=100, record=True, color_system=None)
+        variant = CatalogueVariant(
+            "provider text that should not leak",
+            "https://site/title/season/fr/",
+            "Season 1",
+            MediaLanguage("fr-dub", "French dub"),
+        )
+        with patch("anistream.cli.IntPrompt.ask", return_value=0):
+            self.assertIsNone(cli.choose_variant([variant]))
+
+        output = cli.console.export_text(styles=False)
+        self.assertIn("Season 1 - French dub", output)
+        self.assertNotIn("provider text that should not leak", output)
 
 
 class LoadingRenderingTests(unittest.TestCase):

@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from anistream.models import Catalogue, EmbedCandidate, Episode, ProbeResult, ResolvedMedia
+from anistream.models import Catalogue, EmbedCandidate, Episode, MediaLanguage, ProbeResult, ResolvedMedia
 from anistream.services.downloader import DownloadManager
 from anistream.services.media_validator import ValidationResult
 from anistream.services.source_planner import SourcePlan
@@ -39,7 +39,7 @@ class DownloaderFallbackTests(unittest.TestCase):
             "Title",
             "https://site/title/season/en/",
             "Season 1",
-            "EN",
+            MediaLanguage("en", "EN"),
             (Episode(1, (EmbedCandidate("Player 1", "https://embed/bad"), EmbedCandidate("Player 2", "https://embed/good"))),),
         )
         plan = SourcePlan(None, {1: list(catalogue.episodes[0].candidates)})

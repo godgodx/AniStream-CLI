@@ -2,11 +2,11 @@
 
 # AniStream CLI
 
-**Discover, stream, and download anime from one resilient interactive terminal application.**
+**Discover, stream, and download anime, movies, and series from one resilient interactive terminal application.**
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Provider: Anime-Sama](https://img.shields.io/badge/provider-Anime--Sama-7c3aed)](#supported-providers)
+[![Providers: 2](https://img.shields.io/badge/providers-2-7c3aed)](#supported-providers)
 
 </div>
 
@@ -19,7 +19,7 @@ AniStream CLI is a provider-driven media client with source preflight checks, au
 
 - **Personal watch library** — resume in-progress movies and series directly from the main menu, with clear completion and episode status.
 - **Automatic provider detection** — pasted URLs are accepted only when a registered provider supports them.
-- **Multi-provider search model** — every result identifies its source site; Anime-Sama is the first implementation.
+- **Multi-provider search** — search every enabled catalogue concurrently and keep each result clearly attributed to its source site.
 - **Source preflight planning** — select the first embed that works for every requested episode, or the best verified route per episode.
 - **Automatic download failover** — if resolution, probing, FFmpeg, or output validation fails, retry the missing episode through the next supported source.
 - **Verified output** — temporary files are promoted only after FFprobe confirms a playable MP4 container with video.
@@ -33,8 +33,11 @@ AniStream CLI is a provider-driven media client with source preflight checks, au
 | Provider | Link detection | Search | Watch | Download |
 | --- | :---: | :---: | :---: | :---: |
 | [Anime-Sama](https://anime-sama.to/) | Yes | Yes | Yes | Yes |
+| [French Stream](https://french-stream.one/) | Yes | Yes | Yes | Yes |
 
-The resolver layer currently recognizes direct media plus embeds served through Embed4me, Sendvid, Sibnet, Vidmoly, OneUpload, Uqload, Smoothpre, Movearnpre, Mivalyo, and Dingtezuni. Third-party host availability can change without notice.
+Anime-Sama exposes provider-native variants such as VF and VOSTFR. French Stream currently exposes movie and series variants including French/VF, VOSTFR, TrueFrench/VFF, VFQ, and VO/VOSTENG when the selected title supplies them.
+
+The resolver layer currently recognizes direct media plus embeds served through Embed4me, Sendvid, Sibnet, Vidmoly, Vidzy, OneUpload, Uqload, Smoothpre, Movearnpre, Mivalyo, and Dingtezuni. Third-party host availability can change without notice.
 
 ## Requirements
 
@@ -78,7 +81,7 @@ ffprobe -version
 mpv --version
 ```
 
-AniStream CLI searches `PATH` automatically. On Windows it also checks common WinGet, Scoop, Chocolatey, local project, and Program Files locations. A custom executable can always be selected in Settings.
+AniStream CLI searches `PATH` automatically. On Windows it also checks common WinGet, Scoop, Chocolatey, and Program Files locations. For security, executables stored inside the project tree are never selected automatically; a custom executable can still be chosen explicitly in Settings.
 
 ### 2. Clone and create an isolated environment
 
@@ -130,7 +133,7 @@ Continue Watching -> local library -> select a saved title
 Link or Search
       |
       v
-Provider detection -> catalogue and episode discovery
+Provider detection -> structured season and language discovery
       |
       v
 Watch or Download
@@ -176,6 +179,8 @@ Existing valid episodes are skipped. Invalid or incomplete files are replaced sa
 
 Watch mode resolves and probes candidates in order, then streams the first working source through mpv. If a candidate fails during resolution or preflight, the next candidate is tried automatically. Playback does not create a media download.
 
+For safer playback of third-party streams, AniStream starts mpv without user configuration, external scripts, yt-dlp, file-local configuration, or unsafe playlists. Automatic discovery also rejects mpv executables stored inside the project tree; an explicit path can still be selected in Settings.
+
 AniStream CLI stores the current episode, resume position, completed episodes, and mpv watch-later state. When an episode finishes normally, the next episode is offered immediately and receives a fresh source plan.
 
 Normal mpv window playback is recommended. In-terminal video uses mpv's low-resolution Unicode `tct` output and is enabled only for compatible terminals such as Mintty; unsupported Windows terminals automatically fall back to window mode. On Windows, mpv is attached to a process guard so closing AniStream CLI cannot leave orphaned playback behind.
@@ -205,14 +210,18 @@ src/anistream/
 `-- app.py           Interactive application workflow
 ```
 
-Provider and resolver registries keep the application core independent from any single website.
+Provider and resolver registries keep the application core independent from any single website. Language metadata is provider-owned and travels through the neutral core as a stable code plus a user-facing label, so a new site can expose its own dub, subtitle, or regional variants without changing the CLI workflow.
 
 ### Adding a provider
 
 1. Implement the provider interface in `src/anistream/providers/`.
-2. Register it in `src/anistream/providers/__init__.py`.
-3. Reuse the existing neutral catalogue, episode, variant, and search-result models.
-4. Add focused parsing and URL-detection tests with local fixtures or mocked HTTP responses.
+2. Return one structured `CatalogueVariant` per season/language pair.
+3. Register it in `default_providers()` in `src/anistream/providers/__init__.py`.
+4. Reuse the neutral catalogue, episode, language, variant, and search-result models.
+5. Add focused parsing, language, deep-link, and URL-detection tests with mocked HTTP responses.
+
+> [!TIP]
+> AI coding agents should invoke [`$add-anistream-provider`](.agents/skills/add-anistream-provider/SKILL.md) before integrating a site. The repository skill defines the complete provider, language, resolver, failover, security, testing, and documentation contract.
 
 ### Adding an embed host
 

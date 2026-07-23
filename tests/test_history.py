@@ -7,6 +7,42 @@ from anistream.services.history import HistoryStore
 
 
 class HistoryTests(unittest.TestCase):
+    def test_languages_keep_independent_progress(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "history.json"
+            store = HistoryStore(path)
+            shared = dict(
+                provider_id="site",
+                provider_name="Site",
+                title="Title",
+                season="Season 1",
+                total_episodes=12,
+                duration=1200,
+                completed=False,
+            )
+            store.update(
+                **shared,
+                catalogue_url="https://site/title/season/vf/",
+                language="VF",
+                language_code="vf",
+                episode=2,
+                position=100,
+            )
+            store.update(
+                **shared,
+                catalogue_url="https://site/title/season/vostfr/",
+                language="VOSTFR",
+                language_code="vostfr",
+                episode=5,
+                position=200,
+            )
+
+            vf = store.get("site", "https://site/title/season/vf/")
+            vostfr = store.get("site", "https://site/title/season/vostfr/")
+            self.assertEqual((vf["current_episode"], vf["position"]), (2, 100))
+            self.assertEqual((vostfr["current_episode"], vostfr["position"]), (5, 200))
+            self.assertEqual(len(store.all()), 2)
+
     def test_series_progress_and_title_completion_are_distinct(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "history.json"
@@ -21,11 +57,12 @@ class HistoryTests(unittest.TestCase):
                 total_episodes=12,
                 duration=1200,
             )
-            store.update(**values, episode=2, position=321, completed=False)
+            store.update(**values, episode=2, position=321, completed=False, language_code="en")
             resumed = HistoryStore(path).get("site", values["catalogue_url"])
             self.assertEqual(resumed["current_episode"], 2)
             self.assertEqual(resumed["position"], 321)
             self.assertEqual(resumed["status"], "in_progress")
+            self.assertEqual(resumed["language_code"], "en")
 
             store.update(**values, episode=2, position=1199, completed=True)
             next_episode = HistoryStore(path).get("site", values["catalogue_url"])

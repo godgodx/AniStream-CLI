@@ -59,10 +59,32 @@ class AnimeSamaProviderTests(unittest.TestCase):
     def test_variants_and_episode_matrix(self):
         variants = self.provider.variants("https://anime-sama.to/catalogue/example-title/")
         self.assertEqual(len(variants), 2)
+        self.assertEqual(
+            {(item.season, item.language.code, item.language.label) for item in variants},
+            {("Season 1", "vostfr", "VOSTFR"), ("Season 2", "vf", "VF")},
+        )
         catalogue = self.provider.catalogue(variants[0].url)
         self.assertEqual(catalogue.title, "Example Title")
+        self.assertEqual(catalogue.language.code, variants[0].language.code)
+        self.assertEqual(catalogue.language.label, variants[0].language.label)
         self.assertEqual(len(catalogue.episodes), 2)
         self.assertEqual([item.player for item in catalogue.episodes[0].candidates], ["Player 1", "Player 2"])
+
+    def test_direct_language_url_keeps_provider_language_metadata(self):
+        variants = self.provider.variants(
+            "https://anime-sama.to/catalogue/example-title/saison2/VF/"
+        )
+        self.assertEqual(len(variants), 1)
+        self.assertEqual(variants[0].season, "Season 2")
+        self.assertEqual(variants[0].language.code, "vf")
+        self.assertEqual(variants[0].language.label, "VF")
+
+    def test_every_declared_language_code_is_provider_owned_metadata(self):
+        for code in self.provider.language_codes:
+            with self.subTest(code=code):
+                language = self.provider._language(code)
+                self.assertEqual(language.code, code.casefold())
+                self.assertEqual(language.label, code.upper())
 
 
 if __name__ == "__main__":

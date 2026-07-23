@@ -8,7 +8,7 @@ from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 
 from anistream.errors import ProviderError
-from anistream.models import Catalogue, CatalogueVariant, EmbedCandidate, Episode, SearchResult
+from anistream.models import Catalogue, CatalogueVariant, EmbedCandidate, Episode, MediaLanguage, SearchResult
 from anistream.providers.base import Provider
 from anistream.utils.http import HttpClient
 
@@ -63,7 +63,9 @@ class AnimeSamaProvider(Provider):
         normalized = self._normalize_url(url)
         parts = self._catalogue_parts(normalized)
         if len(parts) >= 4:
-            return [CatalogueVariant(self._variant_label(parts[2], parts[3]), normalized)]
+            season = self._season_label(parts[2])
+            language = self._language(parts[3])
+            return [CatalogueVariant(self._variant_label(parts[2], parts[3]), normalized, season, language)]
 
         root = self._root_url(normalized)
         response = self.http.get(root)
@@ -82,13 +84,17 @@ class AnimeSamaProvider(Provider):
             seen.add(variant_url)
             variant_parts = self._catalogue_parts(variant_url)
             label = name.strip()
+            season_label = ""
+            language = None
             if len(variant_parts) >= 4:
                 label = self._variant_label(variant_parts[2], variant_parts[3], label)
+                season_label = self._season_label(variant_parts[2])
+                language = self._language(variant_parts[3])
                 parsed = urlparse(variant_url)
                 season_roots[variant_parts[2]] = (
                     f"{parsed.scheme}://{parsed.netloc}/catalogue/{variant_parts[1]}/{variant_parts[2]}/"
                 )
-            variants.append(CatalogueVariant(label, variant_url))
+            variants.append(CatalogueVariant(label, variant_url, season_label, language))
 
         candidates: dict[str, tuple[str, str]] = {}
         for season, season_root in season_roots.items():
@@ -105,7 +111,14 @@ class AnimeSamaProvider(Provider):
                         continue
                     season, language = candidates[candidate_url]
                     seen.add(candidate_url)
-                    variants.append(CatalogueVariant(self._variant_label(season, language), candidate_url))
+                    variants.append(
+                        CatalogueVariant(
+                            self._variant_label(season, language),
+                            candidate_url,
+                            self._season_label(season),
+                            self._language(language),
+                        )
+                    )
 
         if not variants:
             raise ProviderError("no watchable seasons or language variants were found")
@@ -148,7 +161,7 @@ class AnimeSamaProvider(Provider):
             title=title,
             url=normalized,
             season=self._season_label(parts[2]),
-            language=parts[3].upper(),
+            language=self._language(parts[3]),
             episodes=tuple(episodes),
         )
 
@@ -190,6 +203,11 @@ class AnimeSamaProvider(Provider):
     @staticmethod
     def _variant_label(season: str, language: str, prefix: str = "") -> str:
         return f"{AnimeSamaProvider._season_label(season)} - {language.upper()}"
+
+    @staticmethod
+    def _language(code: str) -> MediaLanguage:
+        # Codes belong to Anime-Sama. The application core treats them as opaque values.
+        return MediaLanguage.from_code(code)
 
     @staticmethod
     def _season_label(season: str) -> str:

@@ -6,6 +6,27 @@ from typing import Mapping
 
 
 @dataclass(frozen=True, slots=True)
+class MediaLanguage:
+    """Provider-owned language metadata carried through the neutral core."""
+
+    code: str
+    label: str
+
+    def __post_init__(self) -> None:
+        code = self.code.strip().casefold()
+        label = self.label.strip()
+        if not code or not label:
+            raise ValueError("Media language code and label must not be empty")
+        object.__setattr__(self, "code", code)
+        object.__setattr__(self, "label", label)
+
+    @classmethod
+    def from_code(cls, code: str, label: str | None = None) -> MediaLanguage:
+        normalized = code.strip()
+        return cls(normalized, label or normalized.upper())
+
+
+@dataclass(frozen=True, slots=True)
 class SearchResult:
     provider_id: str
     provider_name: str
@@ -17,6 +38,8 @@ class SearchResult:
 class CatalogueVariant:
     name: str
     url: str
+    season: str = ""
+    language: MediaLanguage | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,7 +61,7 @@ class Catalogue:
     title: str
     url: str
     season: str
-    language: str
+    language: MediaLanguage
     episodes: tuple[Episode, ...]
 
 

@@ -168,6 +168,27 @@ class VidmolyResolver(Resolver):
         raise ResolverError(f"Vidmoly resolution failed: {last_error}")
 
 
+class VidzyResolver(Resolver):
+    name = "Vidzy"
+
+    def matches(self, url: str) -> bool:
+        host = hostname(url)
+        return host == "vidzy.cc" or host == "vidzy.org" or host.endswith((".vidzy.cc", ".vidzy.org"))
+
+    def resolve(self, url: str) -> ResolvedMedia:
+        parsed = urlparse(url)
+        origin = f"{parsed.scheme}://{parsed.netloc}/"
+        response = self.http.get(url, headers={"Referer": origin})
+        if response.status_code != 200:
+            raise ResolverError(f"Vidzy returned HTTP {response.status_code}")
+        media_url = _extract_media_url(response.text)
+        if not media_url:
+            media_url = _extract_media_url(unpack_packer(response.text) or "")
+        if not media_url:
+            raise ResolverError("Vidzy did not expose a media source")
+        return ResolvedMedia(media_url, url, self.name, self.media_headers(url), _kind(media_url))
+
+
 class JwPlayerResolver(Resolver):
     host_names = (
         "oneupload.net",
@@ -214,6 +235,7 @@ def default_resolvers(http: HttpClient) -> list[Resolver]:
         SendvidResolver(http),
         SibnetResolver(http),
         VidmolyResolver(http),
+        VidzyResolver(http),
     ]
     resolvers.extend(JwPlayerResolver(http, host) for host in JwPlayerResolver.host_names)
     resolvers.append(DirectMediaResolver(http))

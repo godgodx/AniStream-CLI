@@ -3,7 +3,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
-from anistream.models import Catalogue, Episode, ResolvedMedia
+from anistream.models import Catalogue, Episode, MediaLanguage, ResolvedMedia
 from anistream.services.player import PlaybackService
 
 
@@ -25,7 +25,7 @@ class PlayerOutputTests(unittest.TestCase):
             "Title",
             "https://site/title/season/en/",
             "Season 1",
-            "EN",
+            MediaLanguage("en", "EN"),
             (episode,),
         )
         media = ResolvedMedia(
@@ -50,6 +50,16 @@ class PlayerOutputTests(unittest.TestCase):
         command = popen.call_args.args[0]
         self.assertIn("--really-quiet", command)
         self.assertEqual(command.count("--really-quiet"), 1)
+        for option in (
+            "--no-config",
+            "--load-scripts=no",
+            "--ytdl=no",
+            "--load-unsafe-playlists=no",
+            "--no-use-filedir-conf",
+        ):
+            self.assertIn(option, command)
+            self.assertLess(command.index(option), command.index(media.url))
+        self.assertIs(popen.call_args.kwargs.get("shell"), False)
 
 
 if __name__ == "__main__":

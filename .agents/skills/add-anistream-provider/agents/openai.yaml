@@ -1,0 +1,4 @@
+interface:
+  display_name: "Add an AniStream Provider"
+  short_description: "Add and validate a provider integration"
+  default_prompt: "Use $add-anistream-provider to add a new media provider to AniStream CLI."

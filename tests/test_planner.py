@@ -1,6 +1,6 @@
 import unittest
 
-from anistream.models import Catalogue, EmbedCandidate, Episode, ProbeResult, ResolvedMedia
+from anistream.models import Catalogue, EmbedCandidate, Episode, MediaLanguage, ProbeResult, ResolvedMedia
 from anistream.services.source_planner import SourcePlanner
 
 
@@ -36,7 +36,7 @@ def catalogue():
         "Title",
         "https://site/title/season/en/",
         "Season 1",
-        "EN",
+        MediaLanguage("en", "EN"),
         (
             Episode(1, (EmbedCandidate("Player 1", "https://embed/good-1"), EmbedCandidate("Player 2", "https://embed/good-3"))),
             Episode(2, (EmbedCandidate("Player 1", "https://embed/broken-2"), EmbedCandidate("Player 2", "https://embed/good-4"))),

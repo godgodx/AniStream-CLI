@@ -18,7 +18,9 @@ DEFAULTS: dict[str, Any] = {
     "ffprobe_path": None,
     "mpv_path": None,
     "watch_display": None,
-    "anime_sama": {"user_agent": "", "cf_clearance": ""},
+    "providers": {
+        "anime_sama": {"user_agent": "", "cf_clearance": ""},
+    },
 }
 
 
@@ -34,8 +36,13 @@ class SettingsStore:
                 incoming = json.loads(self.path.read_text(encoding="utf-8"))
                 if isinstance(incoming, dict):
                     for key, value in incoming.items():
-                        if key == "anime_sama" and isinstance(value, dict):
-                            data[key].update(value)
+                        if key == "providers" and isinstance(value, dict):
+                            for provider_id, provider_value in value.items():
+                                if isinstance(provider_value, dict):
+                                    data["providers"].setdefault(str(provider_id), {}).update(provider_value)
+                        elif key == "anime_sama" and isinstance(value, dict):
+                            # Migrate settings written before provider configuration was namespaced.
+                            data["providers"]["anime_sama"].update(value)
                         elif key in data:
                             data[key] = value
             except (OSError, json.JSONDecodeError):
@@ -58,13 +65,19 @@ class SettingsStore:
         self.save()
 
     def provider_settings(self, provider_id: str) -> dict[str, Any]:
-        value = self._data.get(provider_id, {})
+        providers = self._data.get("providers", {})
+        value = providers.get(provider_id, {}) if isinstance(providers, dict) else {}
         return dict(value) if isinstance(value, dict) else {}
 
     def set_provider_settings(self, provider_id: str, value: dict[str, Any]) -> None:
-        if provider_id not in DEFAULTS:
-            raise KeyError(f"Unknown provider: {provider_id}")
-        self._data[provider_id] = value
+        normalized = provider_id.strip()
+        if not normalized:
+            raise ValueError("Provider id must not be empty")
+        providers = self._data.setdefault("providers", {})
+        if not isinstance(providers, dict):
+            providers = {}
+            self._data["providers"] = providers
+        providers[normalized] = dict(value)
         self.save()
 
     def download_directory(self) -> Path:
@@ -80,22 +93,27 @@ class SettingsStore:
             if located:
                 return located
         located = shutil.which(command)
-        if located:
-            return located
+        if located and not self._inside_project(Path(located)):
+            return str(Path(located).resolve())
         for candidate in self._platform_executable_candidates(command):
             if candidate.is_file():
                 return str(candidate.resolve())
         return None
 
     @staticmethod
+    def _inside_project(path: Path) -> bool:
+        try:
+            path.resolve().relative_to(project_root().resolve())
+        except ValueError:
+            return False
+        return True
+
+    @staticmethod
     def _platform_executable_candidates(command: str) -> tuple[Path, ...]:
         if os.name != "nt" or command.lower().removesuffix(".exe") != "mpv":
             return ()
 
-        candidates = [
-            project_root() / "mpv.exe",
-            project_root() / "tools" / "mpv" / "mpv.exe",
-        ]
+        candidates: list[Path] = []
         program_files = os.environ.get("ProgramFiles")
         local_app_data = os.environ.get("LOCALAPPDATA")
         user_profile = os.environ.get("USERPROFILE")

@@ -68,7 +68,7 @@ class DownloadManager:
         plan: SourcePlan,
         event: EventCallback | None,
     ) -> DownloadResult:
-        folder = media_directory(self.download_root, catalogue.title, catalogue.season, catalogue.language)
+        folder = media_directory(self.download_root, catalogue.title, catalogue.season, catalogue.language.label)
         folder.mkdir(parents=True, exist_ok=True)
         output = folder / f"Episode {episode:03d}.mp4"
         existing = self.validator.validate(output) if output.exists() else None

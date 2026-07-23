@@ -5,11 +5,11 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "anistream-cli"
 version = "0.1.0"
-description = "An extensible interactive CLI for discovering, streaming, and downloading anime."
+description = "An extensible interactive CLI for discovering, streaming, and downloading anime, movies, and series."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-keywords = ["anime", "cli", "streaming", "downloader", "mpv", "ffmpeg"]
+keywords = ["anime", "movies", "series", "cli", "streaming", "downloader", "mpv", "ffmpeg"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",

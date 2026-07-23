@@ -63,6 +63,7 @@ class HistoryStore:
         position: float,
         duration: float,
         completed: bool,
+        language_code: str = "",
     ) -> None:
         key = self.key(provider_id, catalogue_url)
         previous = self._data.get(key, {})
@@ -83,6 +84,7 @@ class HistoryStore:
             "title": title,
             "season": season,
             "language": language,
+            "language_code": language_code,
             "media_type": "movie" if total == 1 else "series",
             "total_episodes": total,
             "current_episode": current,
@@ -104,6 +106,7 @@ class HistoryStore:
         season: str,
         language: str,
         total_episodes: int,
+        language_code: str = "",
     ) -> dict[str, Any] | None:
         """Refresh catalogue metadata without changing its last-watched time."""
         key = self.key(provider_id, catalogue_url)
@@ -129,6 +132,7 @@ class HistoryStore:
                 "title": title,
                 "season": season,
                 "language": language,
+                "language_code": language_code,
                 "media_type": "movie" if total == 1 else "series",
                 "total_episodes": total,
                 "current_episode": current,

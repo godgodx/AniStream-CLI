@@ -147,12 +147,20 @@ class PlaybackService:
         command = [
             self.mpv_path,
             "--really-quiet",
+            "--no-config",
+            "--load-scripts=no",
+            "--ytdl=no",
+            "--load-unsafe-playlists=no",
+            "--no-use-filedir-conf",
             "--save-position-on-quit",
             f"--watch-later-dir={watch_dir}",
             "--watch-later-options=start",
             "--write-filename-in-watch-later-config",
             "--cache-on-disk=no",
-            f"--force-media-title={catalogue.title} - {catalogue.season} - Episode {episode.number}",
+            (
+                f"--force-media-title={catalogue.title} - {catalogue.season} - "
+                f"{catalogue.language.label} - Episode {episode.number}"
+            ),
         ]
         if start > 0 and not existing_resume:
             command.append(f"--start={start:.3f}")
@@ -171,7 +179,7 @@ class PlaybackService:
 
         if status:
             status(f"Streaming episode {episode.number} with {media.resolver_name}...")
-        process = subprocess.Popen(command)
+        process = subprocess.Popen(command, shell=False)
         job = _WindowsKillOnCloseJob(process)
         if os.name == "nt" and not job.active:
             process.terminate()
@@ -196,7 +204,8 @@ class PlaybackService:
             catalogue_url=catalogue.url,
             title=catalogue.title,
             season=catalogue.season,
-            language=catalogue.language,
+            language=catalogue.language.label,
+            language_code=catalogue.language.code,
             episode=episode.number,
             total_episodes=len(catalogue.episodes),
             position=position or 0.0,

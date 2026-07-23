@@ -3,7 +3,7 @@ from contextlib import nullcontext
 from unittest.mock import Mock
 
 from anistream.app import Application
-from anistream.models import Catalogue, Episode
+from anistream.models import Catalogue, Episode, MediaLanguage
 
 
 class FakeHistory:
@@ -75,7 +75,7 @@ def catalogue():
         "Title",
         "https://site/title/season/en/",
         "Season 1",
-        "EN",
+        MediaLanguage("en", "EN"),
         tuple(Episode(number, ()) for number in range(1, 13)),
     )
 

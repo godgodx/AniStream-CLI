@@ -5,7 +5,7 @@ import sys
 from anistream.cli import Cli
 from anistream.errors import AniStreamError, ProviderError, ToolNotFoundError
 from anistream.models import Catalogue, SearchResult
-from anistream.providers import AnimeSamaProvider, ProviderRegistry
+from anistream.providers import ProviderRegistry, default_providers
 from anistream.resolvers import ResolverRegistry, default_resolvers
 from anistream.services.downloader import DownloadManager
 from anistream.services.history import HistoryStore
@@ -29,7 +29,7 @@ class Application:
             cookie_header,
             cookie_hosts={"anime-sama.to", "www.anime-sama.to"},
         )
-        self.providers = ProviderRegistry([AnimeSamaProvider(self.http)])
+        self.providers = ProviderRegistry(default_providers(self.http))
         self.resolvers = ResolverRegistry(default_resolvers(self.http))
         self.probe = RemoteMediaProbe(self.http)
         self.planner = SourcePlanner(self.resolvers, self.probe)
@@ -157,7 +157,8 @@ class Application:
             catalogue_url=catalogue.url,
             title=catalogue.title,
             season=catalogue.season,
-            language=catalogue.language,
+            language=catalogue.language.label,
+            language_code=catalogue.language.code,
             total_episodes=len(catalogue.episodes),
         )
 

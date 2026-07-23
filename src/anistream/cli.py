@@ -321,13 +321,21 @@ class Cli:
         return self.choose_item("Search results", results, labels)
 
     def choose_variant(self, variants: list[CatalogueVariant]) -> CatalogueVariant | None:
-        return self.choose_item("Available versions", variants, (escape(item.name) for item in variants))
+        labels = (
+            escape(
+                f"{item.season} - {item.language.label}"
+                if item.season and item.language is not None
+                else item.name
+            )
+            for item in variants
+        )
+        return self.choose_item("Available versions", variants, labels)
 
     def show_catalogue(self, catalogue: Catalogue, history: dict | None) -> None:
         details = Table.grid(padding=(0, 2))
         details.add_row("[dim]Site[/]", escape(catalogue.provider_name))
         details.add_row("[dim]Title[/]", f"[bold]{escape(catalogue.title)}[/]")
-        details.add_row("[dim]Version[/]", f"{escape(catalogue.season)} • {escape(catalogue.language)}")
+        details.add_row("[dim]Version[/]", f"{escape(catalogue.season)} • {escape(catalogue.language.label)}")
         details.add_row("[dim]Episodes[/]", str(len(catalogue.episodes)))
         if history:
             details.add_row("[dim]Watching[/]", format_watch_progress(history))
@@ -483,7 +491,7 @@ class Cli:
         while True:
             self.clear_screen()
             data = self.settings.as_dict()
-            provider = data["anime_sama"]
+            provider = data.get("providers", {}).get("anime_sama", {})
             cookie_state = "configured" if provider.get("cf_clearance") else "not configured"
             table = Table(title="Settings", box=box.ROUNDED)
             table.add_column("#", style="cyan", justify="right")
