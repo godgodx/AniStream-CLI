@@ -804,12 +804,25 @@ class Cli:
         self.console.print(Align.center(panel))
         return self.confirm("Continue with an incomplete download?", default=False)
 
-    def settings_menu(self) -> None:
+    def settings_menu(self, sources: tuple[tuple[str, str], ...] = ()) -> None:
         while True:
             self.clear_screen()
             data = self.settings.as_dict()
             provider = data.get("providers", {}).get("anime_sama", {})
             cookie_state = "configured" if provider.get("cf_clearance") else "not configured"
+            enabled_sources = [
+                name
+                for provider_id, name in sources
+                if self.settings.provider_enabled(provider_id)
+            ]
+            if not sources:
+                source_state = "no registered sources"
+            elif len(enabled_sources) == len(sources):
+                source_state = f"all enabled ({len(sources)})"
+            elif enabled_sources:
+                source_state = ", ".join(enabled_sources)
+            else:
+                source_state = "none enabled"
             table = Table(title="Settings", box=box.ROUNDED)
             table.add_column("#", style="cyan", justify="right")
             table.add_column("Setting")
@@ -822,13 +835,14 @@ class Cli:
                 ("5", "FFprobe path", str(data["ffprobe_path"] or "auto-detect")),
                 ("6", "mpv path", str(data["mpv_path"] or "auto-detect")),
                 ("7", "Watch display", str(data["watch_display"] or "ask on first watch")),
-                ("8", "Anime-Sama session", cookie_state),
-                ("9", "Watch history", f"{len(self.history.all())} title(s)"),
+                ("8", "Sources", source_state),
+                ("9", "Anime-Sama session", cookie_state),
+                ("10", "Watch history", f"{len(self.history.all())} title(s)"),
             ]
             for row in rows:
                 table.add_row(*row)
             self.console.print(Align.center(table))
-            choice = self.ask("Setting to change", choices=[str(i) for i in range(10)], default="0")
+            choice = self.ask("Setting to change", choices=[str(i) for i in range(11)], default="0")
             if choice == "0":
                 return
             if choice == "1":
@@ -844,13 +858,49 @@ class Cli:
             elif choice == "7":
                 self.settings.set("watch_display", self.ask("Display mode", choices=["window", "terminal"], default=data["watch_display"] or "window"))
             elif choice == "8":
+                self.sources_menu(sources)
+            elif choice == "9":
                 user_agent = self.ask("Browser User-Agent", default=str(provider.get("user_agent", "")))
                 cookie = self.ask("cf_clearance cookie value", default=str(provider.get("cf_clearance", "")), password=True)
                 self.settings.set_provider_settings("anime_sama", {"user_agent": user_agent, "cf_clearance": cookie})
-            elif choice == "9" and self.confirm("Clear all watch progress and resume data?", default=False):
+            elif choice == "10" and self.confirm("Clear all watch progress and resume data?", default=False):
                 self.history.clear()
                 self.success("Watch history cleared")
                 self.pause("Press Enter to continue")
+
+    def sources_menu(self, sources: tuple[tuple[str, str], ...]) -> None:
+        if not sources:
+            self.warning("No sources are registered.")
+            self.pause()
+            return
+        while True:
+            self.clear_screen()
+            table = Table(
+                title="Sources",
+                caption="Disabled sources are excluded from Search, Link, and online resume.",
+                box=box.ROUNDED,
+            )
+            table.add_column("#", style="cyan", justify="right")
+            table.add_column("Source")
+            table.add_column("Status", justify="center")
+            for index, (provider_id, name) in enumerate(sources, start=1):
+                enabled = self.settings.provider_enabled(provider_id)
+                status = "[bold green]Enabled[/]" if enabled else "[bold red]Disabled[/]"
+                table.add_row(str(index), name, status)
+            table.add_row("0", "Back", "")
+            self.console.print(Align.center(table))
+            choice = self.ask(
+                "Source to toggle",
+                choices=[str(index) for index in range(len(sources) + 1)],
+                default="0",
+            )
+            if choice == "0":
+                return
+            provider_id, name = sources[int(choice) - 1]
+            enabled = not self.settings.provider_enabled(provider_id)
+            self.settings.set_provider_enabled(provider_id, enabled)
+            state = "enabled" if enabled else "disabled"
+            self.success(f"{name} {state}")
 
     def _notification(self, marker: str, style: str, message: str) -> None:
         content = Text()

@@ -18,6 +18,8 @@ DEFAULTS: dict[str, Any] = {
     "ffprobe_path": None,
     "mpv_path": None,
     "watch_display": None,
+    # An opt-out list keeps every current and future provider enabled by default.
+    "disabled_providers": [],
     "providers": {
         "anime_sama": {"user_agent": "", "cf_clearance": ""},
     },
@@ -78,6 +80,32 @@ class SettingsStore:
             providers = {}
             self._data["providers"] = providers
         providers[normalized] = dict(value)
+        self.save()
+
+    def provider_enabled(self, provider_id: str) -> bool:
+        normalized = provider_id.strip()
+        if not normalized:
+            return False
+        disabled = self._data.get("disabled_providers", [])
+        if not isinstance(disabled, list):
+            return True
+        return normalized not in {str(item) for item in disabled}
+
+    def set_provider_enabled(self, provider_id: str, enabled: bool) -> None:
+        normalized = provider_id.strip()
+        if not normalized:
+            raise ValueError("Provider id must not be empty")
+        disabled = self._data.get("disabled_providers", [])
+        normalized_disabled = {
+            str(item).strip()
+            for item in disabled
+            if isinstance(disabled, list) and str(item).strip()
+        }
+        if enabled:
+            normalized_disabled.discard(normalized)
+        else:
+            normalized_disabled.add(normalized)
+        self._data["disabled_providers"] = sorted(normalized_disabled)
         self.save()
 
     def download_directory(self) -> Path:

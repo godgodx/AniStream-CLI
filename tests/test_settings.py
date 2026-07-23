@@ -8,6 +8,26 @@ from anistream.services.settings import SettingsStore
 
 
 class ProviderSettingsTests(unittest.TestCase):
+    def test_every_provider_is_enabled_by_default_including_future_ids(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = SettingsStore(Path(folder) / "settings.json")
+
+            self.assertTrue(store.provider_enabled("anime_sama"))
+            self.assertTrue(store.provider_enabled("future_site"))
+
+    def test_disabled_provider_choice_is_persisted_and_can_be_reenabled(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "settings.json"
+            store = SettingsStore(path)
+            store.set_provider_enabled("french_stream", False)
+
+            loaded = SettingsStore(path)
+            self.assertFalse(loaded.provider_enabled("french_stream"))
+            self.assertTrue(loaded.provider_enabled("anime_sama"))
+
+            loaded.set_provider_enabled("french_stream", True)
+            self.assertTrue(SettingsStore(path).provider_enabled("french_stream"))
+
     def test_provider_settings_accept_future_provider_ids(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "settings.json"

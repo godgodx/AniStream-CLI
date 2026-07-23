@@ -138,6 +138,33 @@ class MainMenuRenderingTests(unittest.TestCase):
         self.assertGreater(len(title_line) - len(title_line.lstrip()), 5)
 
 
+class SourceSettingsTests(unittest.TestCase):
+    def test_sources_menu_is_centered_and_toggles_the_selected_provider(self):
+        cli = Cli.__new__(Cli)
+        cli.console = Console(width=100, record=True, color_system=None)
+        cli.settings = Mock()
+        cli.settings.provider_enabled.return_value = True
+        with (
+            patch.object(cli, "ask", side_effect=["2", "0"]),
+            patch.object(cli, "success"),
+            patch.object(cli, "clear_screen"),
+        ):
+            cli.sources_menu(
+                (
+                    ("anime_sama", "Anime-Sama"),
+                    ("french_stream", "French Stream"),
+                )
+            )
+
+        cli.settings.set_provider_enabled.assert_called_once_with("french_stream", False)
+        output = cli.console.export_text(styles=False)
+        self.assertIn("Sources", output)
+        self.assertIn("Anime-Sama", output)
+        self.assertIn("French Stream", output)
+        source_line = next(line for line in output.splitlines() if "Anime-Sama" in line)
+        self.assertGreater(len(source_line) - len(source_line.lstrip()), 5)
+
+
 class ScreenNavigationTests(unittest.TestCase):
     def test_main_screen_clears_previous_content_before_header(self):
         cli = Cli.__new__(Cli)

@@ -29,6 +29,7 @@ AniStream CLI is a provider-driven media client with source preflight checks, au
 - **Watch mode with mpv** — stream without creating a download, resume interrupted playback, track completed episodes, and offer the next episode.
 - **Clear completion reports** — see successful, skipped, and failed episodes together with the source used and validation result.
 - **Private local state** — settings, watch history, playback state, and downloads remain ignored by Git.
+- **Configurable sources** — enable or disable providers individually; every registered source is enabled by default.
 
 ## Supported providers
 
@@ -38,6 +39,8 @@ AniStream CLI is a provider-driven media client with source preflight checks, au
 | [French Stream](https://french-stream.one/) | Yes | Yes | Yes | Yes |
 
 Anime-Sama exposes provider-native variants such as VF and VOSTFR. French Stream currently exposes movie and series variants including French/VF, VOSTFR, TrueFrench/VFF, VFQ, and VO/VOSTENG when the selected title supplies them.
+
+Both providers are enabled by default. Use **Settings > Sources** to exclude a provider from Search, direct Link handling, and online resume without affecting downloaded media in Local.
 
 The resolver layer currently recognizes direct media plus embeds served through Embed4me, Sendvid, Sibnet, Vidmoly, Vidzy, OneUpload, Uqload, Smoothpre, Movearnpre, Mivalyo, and Dingtezuni. Third-party host availability can change without notice.
 
@@ -168,7 +171,7 @@ Selecting an in-progress title refreshes only that catalogue and resumes the sav
 
 ### Search
 
-Search every enabled provider from one prompt. Results include their provider name so adding more sites never makes the source ambiguous.
+Search every provider enabled in **Settings > Sources** from one prompt. Results include their provider name so adding more sites never makes the source ambiguous. If every source is disabled, AniStream explains how to enable one instead of issuing an empty network search.
 
 ### Local
 
@@ -178,7 +181,7 @@ Selecting a title starts immediately from the first local episode or resumes the
 
 ### Link
 
-Paste a catalogue URL. AniStream CLI identifies the owning provider and rejects unsupported sites cleanly. After language and season selection, choose Watch or Download.
+Paste a catalogue URL. AniStream CLI identifies the owning provider and rejects unsupported sites cleanly. A link belonging to a disabled provider is identified explicitly and points back to **Settings > Sources**. After language and season selection, choose Watch or Download.
 
 ### Download
 
@@ -220,6 +223,7 @@ Preferences are requested only when first needed and can later be changed from S
 - parallel worker count;
 - FFmpeg, FFprobe, and mpv executable paths;
 - window or terminal watch display;
+- enabled providers, with every current and future provider enabled by default;
 - optional Anime-Sama user agent and Cloudflare clearance cookie.
 
 Runtime state is stored under `data/`; media defaults to `downloads/`. Both locations, virtual environments, partial files, logs, environment files, cookies, session databases, and local launcher scripts are excluded from Git. Treat `data/settings.json` as private if you configure a cookie.
@@ -270,7 +274,7 @@ Run the test suite:
 python -m pytest
 ```
 
-Tests cover provider parsing, source planning, download fallback, MP4 validation, history, HTTP cookie isolation, and key CLI behavior. Network-facing behavior may still change when providers or embed hosts update their pages.
+Tests cover provider parsing, provider selection, source planning, download fallback, MP4 validation, history, HTTP cookie isolation, and key CLI behavior. Network-facing behavior may still change when providers or embed hosts update their pages.
 
 ## Troubleshooting
 

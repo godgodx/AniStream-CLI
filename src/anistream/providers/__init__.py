@@ -6,7 +6,7 @@ from anistream.utils.http import HttpClient
 
 
 def default_providers(http: HttpClient) -> list[Provider]:
-    """Return the enabled provider set from one explicit registration point."""
+    """Return every available provider from one explicit registration point."""
 
     return [AnimeSamaProvider(http), FrenchStreamProvider(http)]
 

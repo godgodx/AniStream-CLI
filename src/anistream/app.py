@@ -32,7 +32,8 @@ class Application:
             cookie_header,
             cookie_hosts={"anime-sama.to", "www.anime-sama.to"},
         )
-        self.providers = ProviderRegistry(default_providers(self.http))
+        self.available_providers = tuple(default_providers(self.http))
+        self._refresh_providers()
         self.resolvers = ResolverRegistry(default_resolvers(self.http))
         self.probe = RemoteMediaProbe(self.http)
         self.planner = SourcePlanner(self.resolvers, self.probe)
@@ -56,7 +57,10 @@ class Application:
                 elif choice == "4":
                     selected = self._from_link()
                 elif choice == "5":
-                    self.cli.settings_menu()
+                    self.cli.settings_menu(
+                        tuple((provider.id, provider.name) for provider in self.available_providers)
+                    )
+                    self._refresh_providers()
                     continue
                 else:
                     continue
@@ -82,6 +86,16 @@ class Application:
         url = self.cli.ask("Paste a catalogue link").strip()
         provider = self.providers.detect(url)
         if provider is None:
+            disabled = next(
+                (item for item in self.available_providers if item.matches(url)),
+                None,
+            )
+            if disabled is not None:
+                self.cli.error(
+                    f"{disabled.name} is disabled. Enable it in Settings > Sources to open this link."
+                )
+                self.cli.pause()
+                return None
             self.cli.error(f"Unsupported site. Enabled sites: {self.providers.names()}")
             self.cli.pause()
             return None
@@ -95,6 +109,10 @@ class Application:
         )
         query = self.cli.ask("Search title").strip()
         if not query:
+            return None
+        if not self.providers.providers:
+            self.cli.warning("No sources are enabled. Enable at least one in Settings > Sources.")
+            self.cli.pause()
             return None
         with self.cli.status("Searching every enabled site..."):
             results, errors = self.providers.search(query)
@@ -111,6 +129,15 @@ class Application:
             return None
         provider = next(item for item in self.providers.providers if item.id == result.provider_id)
         return provider, result.url
+
+    def _refresh_providers(self) -> None:
+        self.providers = ProviderRegistry(
+            [
+                provider
+                for provider in self.available_providers
+                if self.settings.provider_enabled(provider.id)
+            ]
+        )
 
     def _local_library(self) -> None:
         with self.cli.status("Scanning the local library..."):

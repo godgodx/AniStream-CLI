@@ -141,20 +141,27 @@ class MainLoopTests(unittest.TestCase):
         def main_choice(self):
             return next(self.choices)
 
-        def settings_menu(self):
+        def settings_menu(self, _sources=()):
             self.settings_calls += 1
 
     def test_header_is_redrawn_when_returning_to_main_menu(self):
         app = Application.__new__(Application)
         app.cli = self.Cli()
+        app.available_providers = ()
+        app.settings = Mock()
+        app._refresh_providers = Mock()
 
         self.assertEqual(app.run(), 0)
         self.assertEqual(app.cli.settings_calls, 1)
         self.assertEqual(app.cli.main_screen_calls, 2)
+        app._refresh_providers.assert_called_once_with()
 
     def test_main_menu_routes_search_local_link_and_settings_in_order(self):
         app = Application.__new__(Application)
         app.cli = self.Cli()
+        app.available_providers = ()
+        app.settings = Mock()
+        app._refresh_providers = Mock()
         app.cli.choices = iter(["2", "3", "4", "5", "q"])
         app._from_search = Mock(return_value=None)
         app._local_library = Mock()
@@ -188,6 +195,7 @@ class EntryScreenTests(unittest.TestCase):
         app.providers = Mock()
         app.providers.detect.return_value = None
         app.providers.names.return_value = "Site"
+        app.available_providers = ()
 
         self.assertIsNone(app._from_link())
 
@@ -195,6 +203,53 @@ class EntryScreenTests(unittest.TestCase):
             "Open a link",
             "Paste a catalogue URL from any enabled site.",
         )
+
+    def test_link_explains_when_its_source_is_disabled(self):
+        provider = Mock()
+        provider.name = "Anime-Sama"
+        provider.matches.return_value = True
+        app = Application.__new__(Application)
+        app.cli = Mock()
+        app.cli.ask.return_value = "https://anime-sama.example/title"
+        app.providers = Mock()
+        app.providers.detect.return_value = None
+        app.available_providers = (provider,)
+
+        self.assertIsNone(app._from_link())
+
+        app.cli.error.assert_called_once_with(
+            "Anime-Sama is disabled. Enable it in Settings > Sources to open this link."
+        )
+        app.cli.pause.assert_called_once_with()
+
+    def test_search_stops_cleanly_when_every_source_is_disabled(self):
+        app = Application.__new__(Application)
+        app.cli = Mock()
+        app.cli.ask.return_value = "title"
+        app.providers = Mock()
+        app.providers.providers = ()
+
+        self.assertIsNone(app._from_search())
+
+        app.providers.search.assert_not_called()
+        app.cli.warning.assert_called_once_with(
+            "No sources are enabled. Enable at least one in Settings > Sources."
+        )
+        app.cli.pause.assert_called_once_with()
+
+
+class ProviderSelectionTests(unittest.TestCase):
+    def test_registry_is_rebuilt_from_saved_provider_choices(self):
+        enabled = SimpleNamespace(id="enabled")
+        disabled = SimpleNamespace(id="disabled")
+        app = Application.__new__(Application)
+        app.available_providers = (enabled, disabled)
+        app.settings = Mock()
+        app.settings.provider_enabled.side_effect = lambda provider_id: provider_id == "enabled"
+
+        app._refresh_providers()
+
+        self.assertEqual(app.providers.providers, (enabled,))
 
 
 class DownloadCoverageTests(unittest.TestCase):
