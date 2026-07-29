@@ -4,6 +4,7 @@ import hashlib
 import os
 import re
 import subprocess
+import time
 import ctypes
 from ctypes import wintypes
 from pathlib import Path
@@ -14,6 +15,7 @@ from anistream.models import Catalogue, Episode, ResolvedMedia
 from anistream.resolvers.registry import ResolverRegistry
 from anistream.services.history import HistoryStore
 from anistream.services.media_probe import RemoteMediaProbe
+from anistream.services.source_health import SourceHealthTracker
 from anistream.services.source_planner import SourcePlan
 from anistream.utils.paths import data_dir
 
@@ -105,12 +107,14 @@ class PlaybackService:
         history: HistoryStore,
         resolvers: ResolverRegistry,
         probe: RemoteMediaProbe,
+        source_health: SourceHealthTracker | None = None,
     ) -> None:
         self.mpv_path = mpv_path
         self.display_mode = display_mode
         self.history = history
         self.resolvers = resolvers
         self.probe = probe
+        self.source_health = source_health or SourceHealthTracker()
 
     @staticmethod
     def terminal_video_supported() -> bool:
@@ -138,15 +142,99 @@ class PlaybackService:
     ) -> bool:
         if not self.mpv_path:
             raise ToolNotFoundError("mpv was not found; set its path in Settings before using Watch")
-        media = preferred_media or self._pick_media(episode, plan, status)
         state = self.history.get(catalogue.provider_id, catalogue.url) or {}
         start = float(state.get("position", 0.0)) if int(state.get("current_episode", 0) or 0) == episode.number else 0.0
         watch_dir = self._watch_later_dir(catalogue, episode.number)
         watch_dir.mkdir(parents=True, exist_ok=True)
-        resume_snapshot = self._watch_later_snapshot(watch_dir)
+        media = preferred_media or self._pick_media(episode, plan, status)
+        used = {media.url, media.embed_url}
+        failures: list[str] = []
+        while True:
+            resume_snapshot = self._watch_later_snapshot(watch_dir)
+            command = self._mpv_command(
+                catalogue,
+                episode,
+                media,
+                watch_dir,
+                start,
+            )
+            if status:
+                if media.kind == "local":
+                    status(f"Playing downloaded episode {episode.number}...")
+                else:
+                    status(
+                        f"Streaming episode {episode.number} with "
+                        f"{media.resolver_name}..."
+                    )
+            started = time.monotonic()
+            try:
+                process = subprocess.Popen(command, shell=False)
+            except OSError as exc:
+                raise PlaybackError(f"mpv could not start: {exc}") from exc
+            job = _WindowsKillOnCloseJob(process)
+            if os.name == "nt" and not job.active:
+                process.terminate()
+                process.wait(timeout=5)
+                raise RuntimeError("Could not attach mpv to the AniStream process guard")
+            try:
+                return_code = process.wait()
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
+                job.close()
 
+            position = self._resume_position(watch_dir, resume_snapshot)
+            finished = return_code == 0 and position is None
+            saved_position = position
+            if return_code != 0 and saved_position is None and start > 0:
+                saved_position = start
+            self._save_history(
+                catalogue,
+                episode,
+                saved_position or 0.0,
+                finished,
+            )
+            if media.kind != "local":
+                self.source_health.observe(
+                    media.embed_url or media.url,
+                    latency_seconds=time.monotonic() - started,
+                    success=return_code == 0,
+                )
+            if return_code == 0:
+                return finished
+
+            failures.append(
+                f"{media.resolver_name}: mpv exited with code {return_code}"
+            )
+            fallback = self._next_media(episode, plan, used, status)
+            if fallback is None:
+                raise PlaybackError(
+                    "all playback sources failed: " + "; ".join(failures)
+                )
+            if status:
+                status(
+                    f"{media.resolver_name} stopped unexpectedly; "
+                    "switching to the next source..."
+                )
+            media = fallback
+            used.update({media.url, media.embed_url})
+            start = saved_position or 0.0
+
+    def _mpv_command(
+        self,
+        catalogue: Catalogue,
+        episode: Episode,
+        media: ResolvedMedia,
+        watch_dir: Path,
+        start: float,
+    ) -> list[str]:
         command = [
-            self.mpv_path,
+            self.mpv_path or "mpv",
             "--really-quiet",
             "--no-config",
             "--load-scripts=no",
@@ -177,37 +265,15 @@ class PlaybackService:
         if self.display_mode == "terminal":
             command.extend(["--vo=tct", "--profile=sw-fast"])
         command.append(media.url)
+        return command
 
-        if status:
-            if media.kind == "local":
-                status(f"Playing downloaded episode {episode.number}...")
-            else:
-                status(f"Streaming episode {episode.number} with {media.resolver_name}...")
-        try:
-            process = subprocess.Popen(command, shell=False)
-        except OSError as exc:
-            raise PlaybackError(f"mpv could not start: {exc}") from exc
-        job = _WindowsKillOnCloseJob(process)
-        if os.name == "nt" and not job.active:
-            process.terminate()
-            process.wait(timeout=5)
-            raise RuntimeError("Could not attach mpv to the AniStream process guard")
-        try:
-            return_code = process.wait()
-        finally:
-            if process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait()
-            job.close()
-        position = self._resume_position(watch_dir, resume_snapshot)
-        finished = return_code == 0 and position is None
-        saved_position = position
-        if return_code != 0 and saved_position is None and start > 0:
-            saved_position = start
+    def _save_history(
+        self,
+        catalogue: Catalogue,
+        episode: Episode,
+        position: float,
+        completed: bool,
+    ) -> None:
         self.history.update(
             provider_id=catalogue.provider_id,
             provider_name=catalogue.provider_name,
@@ -218,16 +284,43 @@ class PlaybackService:
             language_code=catalogue.language.code,
             episode=episode.number,
             total_episodes=len(catalogue.episodes),
-            position=saved_position or 0.0,
+            position=position,
             duration=0.0,
-            completed=finished,
+            completed=completed,
         )
-        if return_code != 0:
-            raise PlaybackError(
-                f"mpv stopped unexpectedly with exit code {return_code}. "
-                "Your progress was preserved and no automatic source switch was attempted."
-            )
-        return finished
+
+    def _next_media(
+        self,
+        episode: Episode,
+        plan: SourcePlan | None,
+        used: set[str],
+        status: Callable[[str], None] | None,
+    ) -> ResolvedMedia | None:
+        route = plan.routes.get(episode.number, []) if plan else list(episode.candidates)
+        for candidate in route:
+            if candidate.url in used:
+                continue
+            started = time.monotonic()
+            try:
+                media = plan.cache.get((episode.number, candidate.url)) if plan else None
+                if media is None:
+                    media = self.resolvers.resolve(candidate.url)
+                    probe = self.probe.probe(media)
+                    if not probe.valid:
+                        raise ResolverError(probe.detail)
+                if media.url in used or media.embed_url in used:
+                    continue
+                self.source_health.bind(candidate.url, media.url)
+                return media
+            except Exception as exc:
+                self.source_health.observe(
+                    candidate.url,
+                    latency_seconds=time.monotonic() - started,
+                    success=False,
+                )
+                if status:
+                    status(f"{candidate.player} failed; trying the next source...")
+        return None
 
     def _pick_media(
         self,
@@ -238,6 +331,7 @@ class PlaybackService:
         route = plan.routes.get(episode.number, []) if plan else list(episode.candidates)
         errors: list[str] = []
         for candidate in route:
+            started = time.monotonic()
             try:
                 media = plan.cache.get((episode.number, candidate.url)) if plan else None
                 if media is None:
@@ -245,8 +339,19 @@ class PlaybackService:
                     probe = self.probe.probe(media)
                     if not probe.valid:
                         raise ResolverError(probe.detail)
+                self.source_health.bind(candidate.url, media.url)
+                self.source_health.observe(
+                    candidate.url,
+                    latency_seconds=time.monotonic() - started,
+                    success=True,
+                )
                 return media
             except Exception as exc:
+                self.source_health.observe(
+                    candidate.url,
+                    latency_seconds=time.monotonic() - started,
+                    success=False,
+                )
                 errors.append(f"{candidate.player}: {exc}")
                 if status:
                     status(f"{candidate.player} failed; trying the next source...")

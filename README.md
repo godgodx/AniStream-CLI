@@ -21,12 +21,12 @@ AniStream CLI is a provider-driven media client with source preflight checks, au
 - **Downloaded media library** — browse locally available movies and series, see exact episode coverage, and start or resume them without contacting a provider.
 - **Automatic provider detection** — pasted URLs are accepted only when a registered provider supports them.
 - **Multi-provider search** — search every enabled catalogue concurrently and keep each result clearly attributed to its source site.
-- **Source preflight planning** — select the first embed that works for every requested episode, or the best verified route per episode.
+- **Source health planning** — verify HLS startup resources and prefer recently reliable routes without hardcoding a permanent host.
 - **Automatic download failover** — if resolution, probing, FFmpeg, or output validation fails, retry the missing episode through the next supported source.
 - **Live transfer progress** — follow every episode with a centered percentage bar, transferred size, download speed, ETA, and current failover state.
 - **Verified output** — temporary files are promoted only after FFprobe confirms a playable MP4 container with video.
 - **Sequential or parallel batches** — choose once, then change the saved preference later in Settings.
-- **Watch mode with mpv** — stream without creating a download, resume interrupted playback, track completed episodes, and offer the next episode.
+- **Watch mode with mpv** — stream without creating a download, resume interrupted playback, switch sources after a fatal player error, and offer the next episode.
 - **Clear completion reports** — see successful, skipped, and failed episodes together with the source used and validation result.
 - **Private local state** — settings, watch history, playback state, and downloads remain ignored by Git.
 - **Configurable sources** — enable or disable providers individually; every registered source is enabled by default.
@@ -202,7 +202,7 @@ If no single player covers the entire selection, AniStream combines verified epi
 
 ### Watch
 
-Watch mode resolves and probes candidates in order, then streams the first working source through mpv. If a candidate fails during resolution or preflight, the next candidate is tried automatically. Playback does not create a media download.
+Watch mode resolves and probes candidates in health-ranked order, then streams the first working source through mpv. HLS checks include the selected variant, encryption key when present, and first media segment; incomplete VOD playlists are rejected. If a candidate fails during resolution, preflight, or active playback, the next candidate is tried automatically. Active-playback fallback resumes from the last position mpv saved. Playback does not create a media download.
 
 For safer playback of third-party streams, AniStream starts mpv without user configuration, external scripts, yt-dlp, file-local configuration, or unsafe playlists. Automatic discovery also rejects mpv executables stored inside the project tree; an explicit path can still be selected in Settings.
 
@@ -210,7 +210,9 @@ AniStream CLI stores the current episode, resume position, completed episodes, a
 
 When the selected episode already exists in the configured download directory, Watch validates the MP4 with FFprobe and plays that local file before contacting any embed host. The same mpv watch-later identity is used for local and remote playback, so switching between them does not reset episode progress. Invalid local files are ignored with a visible warning and online sources remain available as fallback.
 
-Continue Watching can also resume a verified local episode when its original provider is temporarily unavailable or no longer enabled. If mpv stops unexpectedly after playback has started, AniStream reports the exit cleanly and preserves the saved position; it does not silently switch sources during an active viewing session.
+Continue Watching can also resume a verified local episode when its original provider is temporarily unavailable or no longer enabled. If mpv stops unexpectedly after playback has started, AniStream preserves the saved position and tries the next verified source. It reports a final error only after every candidate has failed.
+
+Downloads also enforce an inactivity deadline and a maximum FFmpeg runtime. A completed temporary file must pass FFprobe validation and, when the upstream duration is known, must contain at least 90% of that duration before it can replace the final MP4.
 
 Normal mpv window playback is recommended. In-terminal video uses mpv's low-resolution Unicode `tct` output and is enabled only for compatible terminals such as Mintty; unsupported Windows terminals automatically fall back to window mode. On Windows, mpv is attached to a process guard so closing AniStream CLI cannot leave orphaned playback behind.
 

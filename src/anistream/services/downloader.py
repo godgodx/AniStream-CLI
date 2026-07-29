@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import queue
 import subprocess
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -13,6 +15,7 @@ from anistream.resolvers.base import hostname
 from anistream.resolvers.registry import ResolverRegistry
 from anistream.services.media_probe import RemoteMediaProbe
 from anistream.services.media_validator import MediaValidator
+from anistream.services.source_health import SourceHealthTracker
 from anistream.services.source_planner import SourcePlan
 from anistream.utils.paths import media_directory
 
@@ -33,6 +36,10 @@ class DownloadProgress:
 
 ProgressCallback = Callable[[DownloadProgress], None]
 TransferCallback = Callable[[float | None, int, float, float | None], None]
+FFMPEG_INACTIVITY_SECONDS = 45.0
+FFMPEG_MAX_SECONDS = 6 * 60 * 60.0
+MIN_EXPECTED_DURATION_SECONDS = 30.0
+MIN_DURATION_RATIO = 0.90
 
 
 class DownloadManager:
@@ -45,6 +52,7 @@ class DownloadManager:
         probe: RemoteMediaProbe,
         download_root: Path,
         parallel_downloads: int = 3,
+        source_health: SourceHealthTracker | None = None,
     ) -> None:
         self.ffmpeg_path = ffmpeg_path
         self.validator = validator
@@ -52,6 +60,7 @@ class DownloadManager:
         self.probe = probe
         self.download_root = download_root
         self.parallel_downloads = max(1, parallel_downloads)
+        self.source_health = source_health or SourceHealthTracker()
 
     def download(
         self,
@@ -110,6 +119,8 @@ class DownloadManager:
         result = DownloadResult(episode, False, output)
         route = plan.routes.get(episode, [])
         for candidate in route:
+            started = time.monotonic()
+            transferred_bytes = 0
             embed_host = hostname(candidate.url)
             attempt = SourceAttempt(candidate.player, embed_host)
             result.attempts.append(attempt)
@@ -124,9 +135,14 @@ class DownloadManager:
                     if not remote.valid:
                         raise RuntimeError(f"source preflight failed: {remote.detail}")
                 attempt.resolver = media.resolver_name
+                self.source_health.bind(candidate.url, media.url)
                 temp = output.with_name(f".{output.stem}.part.mp4")
                 temp.unlink(missing_ok=True)
                 source_detail = f"{candidate.player} · {embed_host}"
+                expected_duration = self.validator.probe_duration(
+                    media.url,
+                    dict(media.headers),
+                )
 
                 def transfer(
                     percent: float | None,
@@ -134,6 +150,8 @@ class DownloadManager:
                     bytes_per_second: float,
                     eta_seconds: float | None,
                 ) -> None:
+                    nonlocal transferred_bytes
+                    transferred_bytes = max(transferred_bytes, downloaded_bytes)
                     self._emit(
                         progress,
                         episode,
@@ -145,7 +163,13 @@ class DownloadManager:
                         eta_seconds=eta_seconds,
                     )
 
-                ffmpeg_error = self._run_ffmpeg(media.url, dict(media.headers), temp, transfer)
+                ffmpeg_error = self._run_ffmpeg(
+                    media.url,
+                    dict(media.headers),
+                    temp,
+                    transfer,
+                    expected_duration=expected_duration,
+                )
                 if ffmpeg_error:
                     temp.unlink(missing_ok=True)
                     raise RuntimeError(ffmpeg_error)
@@ -154,7 +178,25 @@ class DownloadManager:
                 if not validation.valid:
                     temp.unlink(missing_ok=True)
                     raise RuntimeError(f"media verification failed: {validation.detail}")
+                if (
+                    expected_duration >= MIN_EXPECTED_DURATION_SECONDS
+                    and validation.duration < expected_duration * MIN_DURATION_RATIO
+                ):
+                    temp.unlink(missing_ok=True)
+                    raise RuntimeError(
+                        "media verification failed: downloaded duration "
+                        f"{validation.duration:.1f}s is shorter than the expected "
+                        f"{expected_duration:.1f}s"
+                    )
                 os.replace(temp, output)
+                elapsed = max(0.001, time.monotonic() - started)
+                self.source_health.observe(
+                    candidate.url,
+                    latency_seconds=elapsed,
+                    success=True,
+                    bytes_transferred=max(transferred_bytes, output.stat().st_size),
+                    transfer_seconds=elapsed,
+                )
                 attempt.success = True
                 attempt.detail = validation.detail
                 result.success = True
@@ -165,6 +207,14 @@ class DownloadManager:
                 self._emit(progress, episode, "completed", f"Verified · {embed_host}", percent=100.0, eta_seconds=0.0)
                 return result
             except Exception as exc:
+                elapsed = max(0.001, time.monotonic() - started)
+                self.source_health.observe(
+                    candidate.url,
+                    latency_seconds=elapsed,
+                    success=False,
+                    bytes_transferred=transferred_bytes,
+                    transfer_seconds=elapsed,
+                )
                 attempt.detail = str(exc)
                 if event:
                     event(episode, f"source failed; switching automatically ({exc})")
@@ -204,9 +254,15 @@ class DownloadManager:
         headers: dict[str, str],
         output: Path,
         transfer: TransferCallback | None = None,
+        *,
+        expected_duration: float | None = None,
     ) -> str | None:
         header_blob = "".join(f"{key}: {value}\r\n" for key, value in headers.items() if value)
-        duration = self.validator.probe_duration(media_url, headers)
+        duration = (
+            self.validator.probe_duration(media_url, headers)
+            if expected_duration is None
+            else max(0.0, expected_duration)
+        )
         command = [
             self.ffmpeg_path,
             "-hide_banner",
@@ -272,27 +328,66 @@ class DownloadManager:
             "speed",
             "progress",
         }
-        if process.stdout is not None:
-            for raw_line in process.stdout:
-                key, separator, value = raw_line.strip().partition("=")
-                if not separator or key not in progress_keys:
-                    if raw_line.strip():
-                        diagnostics.append(raw_line.strip())
-                    continue
-                values[key] = value
-                if key != "progress":
-                    continue
-                out_time = self._progress_seconds(values)
-                total_size = self._progress_integer(values.get("total_size"))
-                elapsed = max(0.001, time.monotonic() - started)
-                bytes_per_second = max(0.0, total_size / elapsed)
-                percent = min(100.0, out_time * 100.0 / duration) if duration > 0 else None
-                media_rate = out_time / elapsed
-                eta = max(0.0, (duration - out_time) / media_rate) if duration > 0 and media_rate > 0 else None
-                if transfer:
-                    transfer(percent, total_size, bytes_per_second, eta)
-                last_size = total_size
-                values.clear()
+        output_queue: queue.Queue[str | None] = queue.Queue()
+
+        def read_output() -> None:
+            try:
+                if process.stdout is not None:
+                    for raw_line in process.stdout:
+                        output_queue.put(raw_line)
+            finally:
+                output_queue.put(None)
+
+        threading.Thread(
+            target=read_output,
+            name="anistream-ffmpeg-output",
+            daemon=True,
+        ).start()
+        last_activity = time.monotonic()
+        while True:
+            now = time.monotonic()
+            if now - started >= FFMPEG_MAX_SECONDS:
+                self._stop_process(process)
+                return "FFmpeg exceeded the maximum transfer time"
+            if now - last_activity >= FFMPEG_INACTIVITY_SECONDS:
+                self._stop_process(process)
+                return (
+                    "FFmpeg produced no output for "
+                    f"{FFMPEG_INACTIVITY_SECONDS:.0f} seconds"
+                )
+            wait_for = min(
+                1.0,
+                FFMPEG_MAX_SECONDS - (now - started),
+                FFMPEG_INACTIVITY_SECONDS - (now - last_activity),
+            )
+            try:
+                raw_line = output_queue.get(timeout=max(0.001, wait_for))
+            except queue.Empty:
+                if process.poll() is not None:
+                    break
+                continue
+            if raw_line is None:
+                break
+            last_activity = time.monotonic()
+            key, separator, value = raw_line.strip().partition("=")
+            if not separator or key not in progress_keys:
+                if raw_line.strip():
+                    diagnostics.append(raw_line.strip())
+                continue
+            values[key] = value
+            if key != "progress":
+                continue
+            out_time = self._progress_seconds(values)
+            total_size = self._progress_integer(values.get("total_size"))
+            elapsed = max(0.001, time.monotonic() - started)
+            bytes_per_second = max(0.0, total_size / elapsed)
+            percent = min(100.0, out_time * 100.0 / duration) if duration > 0 else None
+            media_rate = out_time / elapsed
+            eta = max(0.0, (duration - out_time) / media_rate) if duration > 0 and media_rate > 0 else None
+            if transfer:
+                transfer(percent, total_size, bytes_per_second, eta)
+            last_size = total_size
+            values.clear()
 
         return_code = process.wait()
         if return_code == 0 and output.exists():
@@ -307,6 +402,17 @@ class DownloadManager:
                 )
             return None
         return diagnostics[-1] if diagnostics else f"FFmpeg exited with code {return_code}"
+
+    @staticmethod
+    def _stop_process(process: subprocess.Popen[str]) -> None:
+        if process.poll() is not None:
+            return
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
 
     @staticmethod
     def _progress_integer(value: str | None) -> int:

@@ -1,7 +1,10 @@
 import unittest
+import time
+from unittest.mock import patch
 
 from anistream.models import Catalogue, EmbedCandidate, Episode, MediaLanguage, ProbeResult, ResolvedMedia
 from anistream.services.source_planner import SourcePlanner
+from anistream.services.source_health import SourceHealthTracker
 
 
 class FakeResolver:
@@ -131,6 +134,62 @@ class SourcePlannerTests(unittest.TestCase):
         self.assertEqual(plan.players_used, ("Player 1", "Player 2"))
         self.assertEqual(plan.routes[1][0].player, "Player 1")
         self.assertEqual(plan.routes[2][0].player, "Player 2")
+
+    def test_recent_failure_reorders_sources_without_hardcoding_a_host(self):
+        health = SourceHealthTracker()
+        data = catalogue()
+        first_urls = [
+            episode.candidates[0].url
+            for episode in data.episodes
+        ]
+        for url in first_urls:
+            health.observe(url, latency_seconds=8.0, success=False)
+
+        plan = SourcePlanner(
+            FakeRegistry(),
+            FakeProbe(),
+            source_health=health,
+        ).plan(data, [1, 2])
+
+        self.assertEqual(plan.primary_player, "Player 2")
+        self.assertEqual(plan.routes[1][0].player, "Player 2")
+
+    def test_player_preflight_has_a_bounded_deadline(self):
+        data = Catalogue(
+            "site",
+            "Site",
+            "Title",
+            "https://site/title",
+            "Season 1",
+            MediaLanguage("en", "EN"),
+            (
+                Episode(
+                    1,
+                    (EmbedCandidate("Slow", "https://embed/slow"),),
+                ),
+            ),
+        )
+        registry = FakeRegistry()
+
+        def stall(_url):
+            time.sleep(0.1)
+            return ResolvedMedia(
+                "https://media/slow.mp4",
+                "https://embed/slow",
+                "Fake",
+            )
+
+        registry.resolver.resolve = stall
+        started = time.monotonic()
+        with patch(
+            "anistream.services.source_planner.PLAYER_PREFLIGHT_DEADLINE_SECONDS",
+            0.01,
+        ):
+            plan = SourcePlanner(registry, FakeProbe()).plan(data, [1])
+
+        self.assertLess(time.monotonic() - started, 0.08)
+        self.assertFalse(plan.complete)
+        self.assertIn("deadline", plan.preflight[0].detail)
 
 
 if __name__ == "__main__":

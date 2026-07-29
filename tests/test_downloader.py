@@ -1,5 +1,6 @@
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -25,11 +26,23 @@ class FakeValidator:
         return 100.0
 
     def validate(self, path):
-        return ValidationResult(path.exists() and path.stat().st_size > 0, "verified MP4")
+        return ValidationResult(
+            path.exists() and path.stat().st_size > 0,
+            "verified MP4",
+            duration=100.0,
+        )
 
 
 class FakeDownloadManager(DownloadManager):
-    def _run_ffmpeg(self, media_url, headers, output, transfer=None):
+    def _run_ffmpeg(
+        self,
+        media_url,
+        headers,
+        output,
+        transfer=None,
+        *,
+        expected_duration=None,
+    ):
         if "bad" in media_url:
             return "simulated media failure"
         if transfer:
@@ -97,6 +110,100 @@ class DownloaderFallbackTests(unittest.TestCase):
         command = popen.call_args.args[0]
         self.assertIn("-progress", command)
         self.assertIs(popen.call_args.kwargs["stderr"], subprocess.STDOUT)
+
+    def test_ffmpeg_is_terminated_after_inactivity(self):
+        class BlockingOutput:
+            def __iter__(self):
+                time.sleep(0.1)
+                return iter(())
+
+        class StalledProcess:
+            def __init__(self):
+                self.stdout = BlockingOutput()
+                self.stopped = False
+
+            def poll(self):
+                return 1 if self.stopped else None
+
+            def terminate(self):
+                self.stopped = True
+
+            def wait(self, timeout=None):
+                return 1
+
+            def kill(self):
+                self.stopped = True
+
+        process = StalledProcess()
+        with tempfile.TemporaryDirectory() as folder:
+            manager = DownloadManager(
+                ffmpeg_path="ffmpeg",
+                validator=FakeValidator(),
+                resolvers=FakeRegistry(),
+                probe=FakeProbe(),
+                download_root=Path(folder),
+            )
+            with (
+                patch(
+                    "anistream.services.downloader.FFMPEG_INACTIVITY_SECONDS",
+                    0.02,
+                ),
+                patch(
+                    "anistream.services.downloader.subprocess.Popen",
+                    return_value=process,
+                ),
+            ):
+                error = manager._run_ffmpeg(
+                    "https://media.example/video.mp4",
+                    {},
+                    Path(folder) / "output.mp4",
+                    expected_duration=100.0,
+                )
+
+        self.assertIn("no output", error)
+        self.assertTrue(process.stopped)
+
+    def test_download_rejects_a_truncated_duration(self):
+        class ShortValidator(FakeValidator):
+            def validate(self, path):
+                return ValidationResult(
+                    path.exists() and path.stat().st_size > 0,
+                    "verified MP4",
+                    duration=40.0,
+                )
+
+        catalogue = Catalogue(
+            "site",
+            "Site",
+            "Title",
+            "https://site/title",
+            "Movie",
+            MediaLanguage("en", "EN"),
+            (
+                Episode(
+                    1,
+                    (EmbedCandidate("Player 1", "https://embed/good"),),
+                ),
+            ),
+        )
+        plan = SourcePlan(None, {1: list(catalogue.episodes[0].candidates)})
+        with tempfile.TemporaryDirectory() as folder:
+            manager = FakeDownloadManager(
+                ffmpeg_path="ffmpeg",
+                validator=ShortValidator(),
+                resolvers=FakeRegistry(),
+                probe=FakeProbe(),
+                download_root=Path(folder),
+            )
+            result = manager.download(
+                catalogue,
+                [1],
+                plan,
+                parallel=False,
+            )[0]
+
+        self.assertFalse(result.success)
+        self.assertIn("shorter than the expected", result.attempts[0].detail)
 
 
 if __name__ == "__main__":

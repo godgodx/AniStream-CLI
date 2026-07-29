@@ -15,6 +15,7 @@ from anistream.services.media_probe import RemoteMediaProbe
 from anistream.services.media_validator import MediaValidator
 from anistream.services.player import PlaybackService
 from anistream.services.settings import SettingsStore
+from anistream.services.source_health import SourceHealthTracker
 from anistream.services.source_planner import SourcePlanner
 from anistream.utils.http import DEFAULT_USER_AGENT, HttpClient
 from anistream.utils.paths import media_directory
@@ -36,7 +37,12 @@ class Application:
         self._refresh_providers()
         self.resolvers = ResolverRegistry(default_resolvers(self.http))
         self.probe = RemoteMediaProbe(self.http)
-        self.planner = SourcePlanner(self.resolvers, self.probe)
+        self.source_health = SourceHealthTracker()
+        self.planner = SourcePlanner(
+            self.resolvers,
+            self.probe,
+            source_health=self.source_health,
+        )
         self.cli = Cli(self.settings, self.history)
 
     def run(self) -> int:
@@ -352,6 +358,7 @@ class Application:
             probe=self.probe,
             download_root=self.settings.download_directory(),
             parallel_downloads=int(self.settings.get("parallel_downloads", 3)),
+            source_health=getattr(self, "source_health", None),
         )
         with self.cli.download_progress(selected) as progress:
             results = manager.download(
@@ -450,6 +457,7 @@ class Application:
                 history=self.history,
                 resolvers=self.resolvers,
                 probe=self.probe,
+                source_health=getattr(self, "source_health", None),
             )
             try:
                 finished = player.play(
