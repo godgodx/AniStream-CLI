@@ -372,7 +372,7 @@ class LocalWatchTests(unittest.TestCase):
 
         app._watch(catalogue(), start_episode=1)
 
-        app.planner.plan.assert_not_called()
+        app.planner.plan_watch.assert_not_called()
         self.assertIs(
             playback_service.return_value.play.call_args.kwargs["preferred_media"],
             local_media,
@@ -382,7 +382,7 @@ class LocalWatchTests(unittest.TestCase):
     def test_all_remote_sources_failing_returns_cleanly_with_progress_safe(self, playback_service):
         app = self.watch_application()
         app._local_episode_media = Mock(return_value=None)
-        app.planner.plan.return_value = SourcePlan(None, {1: []}, missing_episodes=(1,))
+        app.planner.plan_watch.return_value = SourcePlan(None, {1: []}, missing_episodes=(1,))
         playback_service.return_value.play.side_effect = ResolverError("all sources failed")
 
         app._watch(catalogue(), start_episode=1)
@@ -397,12 +397,12 @@ class LocalWatchTests(unittest.TestCase):
         app = self.watch_application()
         app._local_episode_media = Mock(return_value=None)
         remote_plan = SourcePlan("Player 1", {1: []})
-        app.planner.plan.return_value = remote_plan
+        app.planner.plan_watch.return_value = remote_plan
         playback_service.return_value.play.return_value = False
 
         app._watch(catalogue(), start_episode=1)
 
-        app.planner.plan.assert_called_once_with(catalogue(), [1])
+        app.planner.plan_watch.assert_called_once_with(catalogue(), 1)
         self.assertIs(
             playback_service.return_value.play.call_args.args[2],
             remote_plan,

@@ -450,7 +450,7 @@ class Application:
             plan = None
             if local_media is None:
                 with self.cli.status("Checking stream sources..."):
-                    plan = self.planner.plan(catalogue, [number])
+                    plan = self.planner.plan_watch(catalogue, number)
             player = PlaybackService(
                 mpv_path=mpv,
                 display_mode=display,

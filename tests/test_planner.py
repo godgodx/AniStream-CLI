@@ -1,5 +1,6 @@
 import unittest
 import time
+import threading
 from unittest.mock import patch
 
 from anistream.models import Catalogue, EmbedCandidate, Episode, MediaLanguage, ProbeResult, ResolvedMedia
@@ -48,6 +49,105 @@ def catalogue():
 
 
 class SourcePlannerTests(unittest.TestCase):
+    def test_watch_races_sources_and_returns_the_first_verified_media(self):
+        data = Catalogue(
+            "site",
+            "Site",
+            "Title",
+            "https://site/title",
+            "Movie",
+            MediaLanguage("en", "EN"),
+            (
+                Episode(
+                    1,
+                    (
+                        EmbedCandidate("Slow 1", "https://embed/slow-1"),
+                        EmbedCandidate("Fast", "https://embed/fast"),
+                        EmbedCandidate("Slow 2", "https://embed/slow-2"),
+                    ),
+                ),
+            ),
+        )
+        registry = FakeRegistry()
+        slow_finished = threading.Event()
+
+        def resolve(url):
+            if "fast" in url:
+                time.sleep(0.01)
+            else:
+                time.sleep(0.08)
+                slow_finished.set()
+            return ResolvedMedia(url.replace("embed", "media") + ".mp4", url, "Fake")
+
+        registry.resolver.resolve = resolve
+        started = time.monotonic()
+        plan = SourcePlanner(registry, FakeProbe()).plan_watch(data, 1)
+
+        self.assertLess(time.monotonic() - started, 0.06)
+        self.assertEqual(plan.primary_player, "Fast")
+        self.assertEqual(plan.routes[1][0].player, "Fast")
+        self.assertIn((1, "https://embed/fast"), plan.cache)
+        self.assertTrue(plan.complete)
+        slow_finished.wait(timeout=0.2)
+
+    def test_watch_bounds_concurrency_and_queued_sources_keep_their_deadline(self):
+        data = Catalogue(
+            "site",
+            "Site",
+            "Title",
+            "https://site/title",
+            "Movie",
+            MediaLanguage("en", "EN"),
+            (
+                Episode(
+                    1,
+                    tuple(
+                        EmbedCandidate(
+                            f"Player {index + 1}",
+                            f"https://embed/source-{index}",
+                        )
+                        for index in range(5)
+                    ),
+                ),
+            ),
+        )
+        registry = FakeRegistry()
+        lock = threading.Lock()
+        active = 0
+        maximum_active = 0
+
+        def resolve(url):
+            nonlocal active, maximum_active
+            source_index = int(url.rsplit("-", 1)[1])
+            with lock:
+                active += 1
+                maximum_active = max(maximum_active, active)
+            try:
+                if source_index < 3:
+                    time.sleep(0.06)
+                    raise RuntimeError("source unavailable")
+                time.sleep(0.04)
+                return ResolvedMedia(url + ".mp4", url, "Fake")
+            finally:
+                with lock:
+                    active -= 1
+
+        registry.resolver.resolve = resolve
+        with (
+            patch(
+                "anistream.services.source_planner.WATCH_CANDIDATE_DEADLINE_SECONDS",
+                0.08,
+            ),
+            patch(
+                "anistream.services.source_planner.WATCH_PREPARATION_DEADLINE_SECONDS",
+                0.5,
+            ),
+        ):
+            plan = SourcePlanner(registry, FakeProbe()).plan_watch(data, 1)
+
+        self.assertIn(plan.primary_player, {"Player 4", "Player 5"})
+        self.assertLessEqual(maximum_active, 3)
+
     def test_selects_first_player_with_one_hundred_percent(self):
         planner = SourcePlanner(FakeRegistry(), FakeProbe())
         plan = planner.plan(catalogue(), [1, 2])

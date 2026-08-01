@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from concurrent.futures import ALL_COMPLETED, ThreadPoolExecutor, wait
+from concurrent.futures import ALL_COMPLETED, FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -15,6 +15,11 @@ from anistream.services.source_health import SourceHealthTracker
 ProgressCallback = Callable[[str], None]
 PLAN_DEADLINE_SECONDS = 60.0
 PLAYER_PREFLIGHT_DEADLINE_SECONDS = 30.0
+WATCH_PREPARATION_DEADLINE_SECONDS = 40.0
+WATCH_CANDIDATE_DEADLINE_SECONDS = 20.0
+# Watch only needs the first verified source. Three concurrent candidates keep
+# startup responsive without multiplying resolver and probe memory use.
+WATCH_SOURCE_LIMIT = 3
 
 
 @dataclass(slots=True)
@@ -53,6 +58,133 @@ class SourcePlanner:
         self.probe = probe
         self.max_workers = max(1, max_workers)
         self.source_health = source_health or SourceHealthTracker()
+
+    def plan_watch(
+        self,
+        catalogue: Catalogue,
+        episode_number: int,
+        progress: ProgressCallback | None = None,
+    ) -> SourcePlan:
+        """Race a bounded set of sources for one episode and keep the winner."""
+
+        episode = next(
+            (item for item in catalogue.episodes if item.number == episode_number),
+            None,
+        )
+        if episode is None:
+            raise ValueError(f"Unknown episode number: {episode_number}")
+
+        candidates = list(episode.candidates)
+        ranking = self.source_health.rank_urls(
+            [candidate.url for candidate in candidates]
+        )
+        ordered = [
+            candidates[index]
+            for index in ranking
+            if self.resolvers.supports(candidates[index].url)
+        ]
+        if not ordered:
+            return SourcePlan(
+                None,
+                {episode_number: []},
+                missing_episodes=(episode_number,),
+            )
+        if progress:
+            progress(
+                f"Checking up to {min(WATCH_SOURCE_LIMIT, len(ordered))} "
+                "stream sources in parallel..."
+            )
+
+        deadline = time.monotonic() + WATCH_PREPARATION_DEADLINE_SECONDS
+        records: list[PreflightResult] = []
+        winner: PreflightResult | None = None
+        pool = ThreadPoolExecutor(
+            max_workers=min(WATCH_SOURCE_LIMIT, len(ordered))
+        )
+        pending = {
+            pool.submit(
+                self._resolve_and_probe,
+                episode_number,
+                candidate,
+                WATCH_CANDIDATE_DEADLINE_SECONDS,
+            ): candidate
+            for candidate in ordered
+        }
+        try:
+            while pending and winner is None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                done, _ = wait(
+                    tuple(pending),
+                    timeout=max(0.001, remaining),
+                    return_when=FIRST_COMPLETED,
+                )
+                if not done:
+                    break
+                # When multiple candidates finish in the same scheduler tick,
+                # retain the health-ranked order as the deterministic tie-break.
+                completed = sorted(
+                    done,
+                    key=lambda future: ordered.index(pending[future]),
+                )
+                for future in completed:
+                    candidate = pending.pop(future)
+                    try:
+                        result = future.result()
+                    except Exception as exc:
+                        result = PreflightResult(
+                            episode_number,
+                            candidate,
+                            None,
+                            False,
+                            str(exc),
+                        )
+                    records.append(result)
+                    if winner is None and result.valid and result.media is not None:
+                        winner = result
+
+            detail = (
+                "source race cancelled after another source succeeded"
+                if winner is not None
+                else "source planning deadline exceeded"
+            )
+            for future, candidate in pending.items():
+                future.cancel()
+                records.append(
+                    PreflightResult(
+                        episode_number,
+                        candidate,
+                        None,
+                        False,
+                        detail,
+                    )
+                )
+        finally:
+            # Running resolver calls are bounded by the HTTP layer and cannot
+            # be interrupted safely; queued calls are cancelled immediately.
+            pool.shutdown(wait=False, cancel_futures=True)
+
+        cache: dict[tuple[int, str], ResolvedMedia] = {}
+        if winner is None or winner.media is None:
+            return SourcePlan(
+                None,
+                {episode_number: ordered},
+                preflight=records,
+                missing_episodes=(episode_number,),
+            )
+
+        cache[(episode_number, winner.candidate.url)] = winner.media
+        route = [winner.candidate]
+        route.extend(candidate for candidate in ordered if candidate != winner.candidate)
+        return SourcePlan(
+            winner.candidate.player,
+            {episode_number: route},
+            cache=cache,
+            preflight=records,
+            verified_episodes=(episode_number,),
+            players_used=(winner.candidate.player,),
+        )
 
     def plan(
         self,
@@ -194,7 +326,12 @@ class SourcePlanner:
         results.sort(key=lambda item: item.episode)
         return results
 
-    def _resolve_and_probe(self, episode: int, candidate: EmbedCandidate) -> PreflightResult:
+    def _resolve_and_probe(
+        self,
+        episode: int,
+        candidate: EmbedCandidate,
+        deadline_seconds: float | None = None,
+    ) -> PreflightResult:
         resolver = self.resolvers.resolver_for(candidate.url)
         if resolver is None:
             return PreflightResult(episode, candidate, None, False, f"unsupported host: {hostname(candidate.url)}")
@@ -203,6 +340,19 @@ class SourcePlanner:
             media = resolver.resolve(candidate.url)
             probe = self.probe.probe(media)
             latency = time.monotonic() - started
+            if deadline_seconds is not None and latency > deadline_seconds:
+                self.source_health.observe(
+                    candidate.url,
+                    latency_seconds=latency,
+                    success=False,
+                )
+                return PreflightResult(
+                    episode,
+                    candidate,
+                    None,
+                    False,
+                    "source candidate deadline exceeded",
+                )
             self.source_health.bind(candidate.url, media.url)
             self.source_health.observe(
                 candidate.url,
